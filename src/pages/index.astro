@@ -410,98 +410,89 @@ const credentialStructuredData = {
   <script type="application/ld+json" set:html={JSON.stringify(websiteStructuredData)} />
   <script type="application/ld+json" set:html={JSON.stringify(credentialStructuredData)} />
 
-  <section class="academy-hero cognitive-hero reveal-up mb-8 px-5 py-6 md:px-8 md:py-8">
-    <div class="cognitive-aurora" aria-hidden="true"></div>
-    <div class="cognitive-scan" aria-hidden="true"></div>
-    <div class="cognitive-beacon" aria-hidden="true"></div>
-    <div class="cognitive-code-rain" aria-hidden="true">
-      <div class="code-line line-a">PROMPT CONTEXT REVIEW OUTPUT</div>
-      <div class="code-line line-b">CLINICAL NOTE MANUSCRIPT PILOT</div>
-      <div class="code-line line-c">TUTOR MENTOR COHORT CERTIFICATE</div>
-      <div class="code-line line-d">PRACTICE PUBLISH BUILD PRACTICE</div>
-      <div class="code-line line-e">DOCTORS WHO CAN USE AI CAN LEAD</div>
-    </div>
-    <div class="cognitive-neural-core" aria-hidden="true">
-      <svg viewBox="0 0 260 220" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path class="core-flow" d="M10 42H96" />
-        <path class="core-flow flow-c" d="M164 42H250" />
-        <path class="core-flow" d="M10 110H96" />
-        <path class="core-flow flow-d" d="M164 110H250" />
-        <rect class="core-chip" x="96" y="20" width="68" height="132" rx="16" />
-        <rect class="core-chip-inner" x="112" y="40" width="36" height="92" rx="10" />
-        <path class="core-trace" d="M121 58H139" />
-        <path class="core-trace trace-c" d="M121 80H139" />
-        <path class="core-trace trace-d" d="M121 102H139" />
-        <path class="core-trace trace-e" d="M121 124H139" />
-        <circle class="data-packet" cx="44" cy="42" r="5" />
-        <circle class="data-packet packet-b" cx="216" cy="42" r="5" />
-        <circle class="data-packet packet-c" cx="44" cy="110" r="5" />
-        <circle class="data-packet packet-d" cx="216" cy="110" r="5" />
-      </svg>
-    </div>
-
-    <div class="academy-hero-grid relative z-10">
-      <div>
-        <div class="flex flex-wrap items-center gap-3">
-          <span class="academy-kicker">GreyBrain Academy</span>
-          <a
-            href="/certifications/iihmrb-generative-ai-for-doctors-certificate.pdf"
-            target="_blank"
-            rel="noreferrer"
-            class="academy-trust-badge"
-          >
-            IIHMRB Recognized
-          </a>
-        </div>
-        <h1 class="academy-hero-title mt-5 text-white">The AI Academy for Doctors Who Want to <em>Practice, Publish, and Build</em></h1>
-        <p class="academy-hero-standfirst mt-5">
-          GreyBrain helps doctors use AI in real work: clinical productivity, academic research, and healthcare venture building.
+  <div class="mockup-hero-container">
+    <section class="mockup-hero">
+      <div class="mockup-hero-content">
+        <h1 class="mockup-title">The AI Academy for Doctors</h1>
+        <h2 class="mockup-subtitle">Practice, Publish, and Build</h2>
+        
+        <p class="mockup-description">
+          Unlock Your Medical Career with Artificial Intelligence<br/>
+          <span class="mockup-description-sub">Master AI implementation, accelerate medical research, and advance your<br/>professional journey with world-class faculty.</span>
         </p>
-        <div class="mt-6">
+        <div class="mt-8 flex justify-center">
           <AudienceCtaSwitcher client:load enrollTargetId="enroll" />
         </div>
-        <div class="hero-trust-strip mt-5">
-          {heroTrustPoints.map((item) => (
-            <article class="hero-trust-chip">
-              <p class="hero-trust-label">{item.label}</p>
-              <p class="hero-trust-value">{item.value}</p>
-            </article>
-          ))}
-        </div>
+      </div>
+    </section>
+
+    <div class="mockup-cards-wrapper">
+      <div class="mockup-cards-grid">
+        <!-- Practice Card -->
+        <article class="mockup-card">
+          <div class="mockup-card-icon">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" />
+            </svg>
+          </div>
+          <p class="mockup-card-kicker">(Practice)</p>
+          <h3 class="mockup-card-title">CLINICAL AI<br/>MASTERCLASS</h3>
+          <p class="mockup-card-copy">Level 1: AI Tools for<br/>Diagnosis & Workflow</p>
+          <div class="mockup-card-action">
+            <a href="/tracks/clinical-ai-practitioner" class="mockup-btn">Enroll Now</a>
+          </div>
+        </article>
+
+        <!-- Publish Card -->
+        <article class="mockup-card">
+          <div class="mockup-card-icon">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25" />
+            </svg>
+          </div>
+          <p class="mockup-card-kicker">(Publish)</p>
+          <h3 class="mockup-card-title">RESEARCH &<br/>PUBLICATION<br/>ACCELERATOR</h3>
+          <p class="mockup-card-copy">Write & Publish AI-driven<br/>Research Papers</p>
+          <div class="mockup-card-action">
+            <a href="/tracks/ai-research-accelerator" class="mockup-btn">Explore Path</a>
+          </div>
+        </article>
+
+        <!-- Build Card -->
+        <article class="mockup-card">
+          <div class="mockup-card-icon">
+            <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 3m8.5-3l1 3m0 0l.5 1.5m-.5-1.5h-9.5m0 0l-.5 1.5M9 11.25v1.5M12 9v3.75m3-6v6" />
+            </svg>
+          </div>
+          <p class="mockup-card-kicker">(Build)</p>
+          <h3 class="mockup-card-title">AI INNOVATION &<br/>LEADERSHIP</h3>
+          <p class="mockup-card-copy">Develop & Deploy Your<br/>Own AI Solutions</p>
+          <div class="mockup-card-action">
+            <a href="/tracks/doctor-ai-entrepreneurship" class="mockup-btn">Learn More</a>
+          </div>
+        </article>
       </div>
 
-      <aside class="academy-instrument">
-        <div class="academy-instrument-panel">
-          <div class="flex items-center justify-between gap-3">
-            <div>
-              <p class="academy-pipeline-label">GreyBrain workflow</p>
-              <h2 class="mt-2 text-2xl font-extrabold text-white">Prompt. Ground. Review. Use.</h2>
-            </div>
-            <span class="rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-200">Doctor-ready AI</span>
-          </div>
-          <p class="academy-instrument-caption">One system turns doctor questions into clinical assets, research outputs, and venture-ready briefs.</p>
-          <div class="academy-instrument-stage mt-4" aria-hidden="true">
-            <div class="academy-stage-halo"></div>
-            <div class="academy-stage-axis academy-stage-axis--h"></div>
-            <div class="academy-stage-axis academy-stage-axis--v"></div>
-            <div class="academy-stage-label academy-stage-label--prompt">Prompt</div>
-            <div class="academy-stage-label academy-stage-label--context">Context</div>
-            <div class="academy-stage-label academy-stage-label--review">Review</div>
-            <div class="academy-stage-label academy-stage-label--practice">Practice</div>
-            <div class="academy-stage-label academy-stage-label--publish">Publish</div>
-            <div class="academy-stage-label academy-stage-label--build">Build</div>
-            <div class="academy-stage-core">
-              <span>GreyBrain tutor</span>
-            </div>
-            <div class="academy-stage-note academy-stage-note--left">Doctor task becomes a grounded draft</div>
-            <div class="academy-stage-note academy-stage-note--right">Three routes, one learning system</div>
-          </div>
+      <div class="mockup-trust-strip">
+        <a href="/certifications/iihmrb-generative-ai-for-formations-certificate.pdf" target="_blank" rel="noreferrer" class="mockup-trust-item inline-flex items-center gap-2">
+          <svg class="w-8 h-8 text-slate-700" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          <div class="text-left leading-tight"><strong class="block text-slate-900 border-b border-slate-300 pb-0.5 mb-0.5">IIHMRB</strong> Recognized</div>
+        </a>
+        <div class="mockup-trust-item inline-flex items-center gap-2">
+           <svg class="w-8 h-8 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
+           <div class="text-left leading-tight"><strong class="block text-slate-900">CME</strong> Accredited Provider</div>
         </div>
-      </aside>
+        <div class="mockup-trust-item inline-flex items-center gap-2">
+          <svg class="w-8 h-8 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" /></svg>
+          <div class="text-left leading-tight"><strong class="block text-slate-900">Peer Reviewed</strong> Courses</div>
+        </div>
+      </div>
     </div>
-  </section>
+  </div>
 
-  <section class="public-section reveal-up reveal-delay-1 mb-8 academy-logic-shell">
+  <section class="public-section reveal-up reveal-delay-1 mb-16 mt-12 bg-white">
     <div class="academy-logic-grid">
       <article class="academy-logic-intro">
         <p class="public-section-kicker">How GreyBrain works</p>
@@ -534,7 +525,7 @@ const credentialStructuredData = {
     </div>
   </section>
 
-  <section class="public-section reveal-up reveal-delay-2 mb-8 academy-path-shell">
+  <section class="public-section reveal-up reveal-delay-2 mb-16 bg-slate-50 border-y border-slate-100 py-12">
     <div class="public-section-head public-section-head--action">
       <div>
         <p class="public-section-kicker">Three outcome paths</p>
@@ -601,7 +592,7 @@ const credentialStructuredData = {
     </div>
   </section>
 
-  <section id="insights" class="public-section reveal-up reveal-delay-2 mb-8 academy-signal-shell">
+  <section id="insights" class="public-section reveal-up reveal-delay-2 mb-16 bg-white py-12">
     <div class="public-section-head public-section-head--action">
       <div>
         <p class="public-section-kicker">Academy signal board</p>
@@ -775,7 +766,7 @@ const credentialStructuredData = {
     </div>
   </section>
 
-  <section id="courses" class="public-section reveal-up reveal-delay-3 mb-8 academy-course-shell">
+  <section id="courses" class="public-section reveal-up reveal-delay-3 mb-16 bg-slate-50 border-y border-slate-100 py-12">
     <div class="public-section-head public-section-head--action">
       <div>
         <p class="public-section-kicker">Current cohorts</p>
