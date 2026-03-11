@@ -478,6 +478,8 @@ function normalizeModelSpotlight(model, index = 0) {
   const downloads = Number(model?.downloads || 0);
   const createdAt = parseIsoDate(model?.createdAt || model?.lastModified || model?.publishedAt || '');
   const license = cleanText(model?.cardData?.license || model?.license || '');
+  // Parse author/name from "author/model-name" format
+  const authorPart = modelId.includes('/') ? modelId.split('/')[0] : '';
   const shortModelName = modelId.includes('/') ? modelId.split('/').pop() : modelId;
   const summary = editorializeSummary(
     `Trending on Hugging Face for ${formatPipelineLabel(pipelineTag)}. ${explainTaskForClinicians(pipelineTag)} Signal strength: ${toK(downloads)} downloads and ${toK(
@@ -494,6 +496,18 @@ function normalizeModelSpotlight(model, index = 0) {
       : 'productivity';
 
   return {
+    // Display fields (fixed — previously missing, causing blank cards)
+    name: shortModelName,
+    author: authorPart,
+    hfUrl: `https://huggingface.co/${modelId}`,
+    pipeline: formatPipelineLabel(pipelineTag),
+    clinicalBlurb: explainTaskForClinicians(pipelineTag),
+    downloadsFormatted: toK(downloads),
+    likesFormatted: toK(likes),
+    downloads,
+    likes,
+    license,
+    // Legacy fields (keep for backward compat)
     title: editorializeTitle(`Model Watch: ${shortModelName}`),
     link: `https://huggingface.co/${modelId}`,
     date: createdAt || '',

@@ -293,6 +293,119 @@ app.post('/api/chat/counselor', async (c) => {
   }
 });
 
+app.post('/api/chat', async (c) => {
+  try {
+    const { message, history = [] } = await c.req.json();
+    
+    if (!message) {
+      return c.json({ error: 'message is required.' }, 400);
+    }
+
+    let contextStr = '';
+    if (c.env.AI && c.env.DEEPLEARN_INDEX && c.env.DEEPLEARN_DB) {
+      try {
+        const embedResponse = await c.env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [message] });
+        const embedding = embedResponse.data?.[0];
+        if (embedding) {
+          const vectorResponse = await c.env.DEEPLEARN_INDEX.query(embedding, { topK: 3 });
+          if (vectorResponse && vectorResponse.matches && vectorResponse.matches.length > 0) {
+            const matchIds = vectorResponse.matches.map((m) => m.id);
+            const placeholders = matchIds.map(() => '?').join(',');
+            const rows = await c.env.DEEPLEARN_DB.prepare(
+              `SELECT title, summary, canonical_url FROM content_posts WHERE id IN (${placeholders})`
+            ).bind(...matchIds).all();
+            
+            if (rows.success && rows.results.length > 0) {
+              contextStr = rows.results.map((r) => `Title: ${r.title}\nSummary: ${r.summary}\nLink: ${r.canonical_url}`).join('\n\n');
+            }
+          }
+        }
+      } catch (e) {
+        console.error('AutoRAG context failed:', e);
+      }
+    }
+
+    const systemPrompt = `You are a helpful assistant for GreyBrain. Answer user questions based on the Context below. If a user asks for more information, provide the markdown links given in the Context. If the answer is not in the context, just answer generally based on your knowledge but invite them to explore edu.greybrain.ai.\n\nContext:\n${contextStr}`;
+
+    const baseUrl = resolveGroqBaseUrl(c.env);
+    const model = resolveGroqModel(c.env, baseUrl);
+    const apiKey = (c.env.GROQ_API_KEY || '').trim();
+
+    if (!apiKey) return c.json({ error: 'server GROQ_API_KEY is required.' }, 400);
+
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.slice(-4),
+      { role: 'user', content: message }
+    ];
+
+    let response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.3,
+        messages: apiMessages
+      })
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      return c.json({ error: 'Chat completion failed', details }, 502);
+    }
+    
+    const payload = await response.json();
+    const reply = payload?.choices?.[0]?.message?.content ?? 'I apologize, but I cannot process that right now.';
+    return c.json({ reply, contextUsed: contextStr });
+    
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to process chat request.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+    );
+  }
+});
+
+app.get('/api/analytics/insights', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 not configured' }, 500);
+  }
+  try {
+    const rows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT tags_json FROM content_posts WHERE status = 'published' AND tags_json IS NOT NULL`
+    ).all();
+    
+    const tagCounts = {};
+    if (rows.success && rows.results) {
+      for (const row of rows.results) {
+        try {
+          const tags = JSON.parse(row.tags_json || '[]');
+          for (const t of tags) {
+            if (t) tagCounts[t] = (tagCounts[t] || 0) + 1;
+          }
+        } catch(e){}
+      }
+    }
+    
+    const sortedTags = Object.entries(tagCounts)
+      .sort((a,b) => b[1] - a[1])
+      .map(e => e[0])
+      .slice(0, 10);
+      
+    return c.json({
+       top_tags: sortedTags,
+       insight_message: sortedTags.length > 0 ? `Trending topics based on published content: ${sortedTags.slice(0, 5).join(', ')}.` : 'No trending topics found yet.'
+    });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 app.get('/api/counselor/faqs', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({
@@ -5279,16 +5392,24 @@ app.get('/api/content/posts', async (c) => {
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 6)));
-    const result = await c.env.DEEPLEARN_DB.prepare(
+    const contentTypeFilter = clean(c.req.query('content_type') || '', 40).toLowerCase();
+    const whereClause = contentTypeFilter
+      ? `WHERE status = 'published' AND content_type = ?`
+      : `WHERE status = 'published'`;
+    const statement = c.env.DEEPLEARN_DB.prepare(
       `SELECT
-         id, slug, title, summary, path, content_type, tags_json, source_urls_json, canonical_url, published_at_ms, created_at_ms
+         id, slug, title, summary, path, content_type, tags_json, source_urls_json, canonical_url,
+         community_likes, prompt_text, prompt_output_preview, prompt_keyword, suggested_models_json,
+         hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
+         published_at_ms, created_at_ms
        FROM content_posts
-       WHERE status = 'published'
+       ${whereClause}
        ORDER BY COALESCE(published_at_ms, created_at_ms) DESC
        LIMIT ?`
-    )
-      .bind(limit)
-      .all();
+    );
+    const result = contentTypeFilter
+      ? await statement.bind(contentTypeFilter, limit).all()
+      : await statement.bind(limit).all();
 
     const posts = (result.results || []).map((row) => {
       const tags = parseJsonArray(row.tags_json);
@@ -5307,7 +5428,19 @@ app.get('/api/content/posts', async (c) => {
         link: canonicalUrl || sourceUrls[0] || 'https://greybrain.ai/clinical-ai',
         date: msToIsoDate(row.published_at_ms || row.created_at_ms),
         published_at_ms: row.published_at_ms,
-        created_at_ms: row.created_at_ms
+        created_at_ms: row.created_at_ms,
+        // Community & DAIY fields
+        community_likes: Number(row.community_likes || 0),
+        prompt_text: row.prompt_text || '',
+        prompt_output_preview: row.prompt_output_preview || '',
+        prompt_keyword: row.prompt_keyword || '',
+        suggested_models: parseJsonArray(row.suggested_models_json),
+        // Model spotlight fields
+        hf_model_id: row.hf_model_id || '',
+        hf_model_author: row.hf_model_author || '',
+        hf_model_pipeline: row.hf_model_pipeline || '',
+        hf_model_downloads: Number(row.hf_model_downloads || 0),
+        hf_model_likes: Number(row.hf_model_likes || 0)
       };
     });
 
@@ -5322,6 +5455,7 @@ app.get('/api/content/posts', async (c) => {
     );
   }
 });
+
 
 app.get('/api/content/posts/:slug', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
@@ -5379,6 +5513,91 @@ app.get('/api/content/posts/:slug', async (c) => {
       },
       500
     );
+  }
+});
+
+// --- PUBLIC: Anonymous Like ---
+app.post('/api/content/posts/:id/like', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'Content database is not configured.' }, 500);
+  }
+  const postId = clean(c.req.param('id'), 64);
+  if (!postId) return c.json({ error: 'id required' }, 400);
+
+  // Deduplicate by IP using a short-lived KV or just update (best-effort)
+  try {
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE content_posts SET community_likes = COALESCE(community_likes, 0) + 1 WHERE id = ? AND status = 'published'`
+    ).bind(postId).run();
+    const row = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT community_likes FROM content_posts WHERE id = ?`
+    ).bind(postId).first();
+    return c.json({ ok: true, community_likes: Number(row?.community_likes || 0) });
+  } catch (error) {
+    return c.json({ error: 'Failed to record like.', details: error instanceof Error ? error.message : 'unknown' }, 500);
+  }
+});
+
+// --- ADMIN: Content Queue (drafts + published) ---
+app.get('/api/content/queue', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, slug, title, summary, status, content_type, path, generated_at_ms, published_at_ms, updated_at_ms,
+              prompt_text, prompt_keyword, hf_model_id, hf_model_author, community_likes
+       FROM content_posts
+       WHERE content_type IN ('model_spotlight', 'daiy_prompt', 'health_news', 'daily_brief')
+       ORDER BY updated_at_ms DESC
+       LIMIT 50`
+    ).all();
+    return c.json({ posts: result.results || [] });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch content queue.', details: error instanceof Error ? error.message : 'unknown' }, 500);
+  }
+});
+
+// --- ADMIN: On-Demand Generate (BYOK, dispatches to correct generator) ---
+app.post('/api/content/generate', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+
+  let payload = {};
+  try { payload = await c.req.json(); } catch { payload = {}; }
+
+  const apiKey = clean(payload?.api_key || payload?.gemini_key || payload?.groq_key || '', 240);
+  const provider = resolveContentGenerationProvider(payload?.provider || 'gemini');
+  const contentType = clean(payload?.type || 'all', 32).toLowerCase();
+  const force = payload?.force === true;
+
+  if (!apiKey) return c.json({ error: 'api_key is required.' }, 400);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const results = {};
+
+    if (contentType === 'all' || contentType === 'model_spotlight') {
+      results.model_spotlight = await generateModelSpotlightDraft(c.env, { apiKey, provider, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'daiy_prompt') {
+      results.daiy_prompt = await generateDaiyDraft(c.env, { apiKey, provider, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'health_news') {
+      // Health news always uses Gemini (search grounding)
+      const geminiKey = apiKey;
+      results.health_news = await generateHealthNewsDraft(c.env, { apiKey: geminiKey, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'daily_brief') {
+      results.daily_brief = await generateDailyContentDraft(c.env, { mode: 'manual', force, apiKeyOverride: apiKey, providerOverride: provider, modelOverride: '' }).catch((e) => ({ error: e.message }));
+    }
+
+    return c.json({ ok: true, results });
+  } catch (error) {
+    return c.json({ error: 'Generate failed.', details: error instanceof Error ? error.message : 'unknown' }, 500);
   }
 });
 
@@ -5505,6 +5724,55 @@ app.post('/api/admin/content/generate-daily', async (c) => {
   }
 });
 
+app.post('/api/admin/content/embed', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_INDEX) {
+    return c.json({ error: 'Vectorize index DEEPLEARN_INDEX is not configured.' }, 500);
+  }
+
+  if (!c.env.AI) {
+    return c.json({ error: 'AI binding is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const text = clean(payload?.text || '', 50000);
+    const metadata = payload?.metadata || {};
+
+    if (!text) {
+      return c.json({ error: 'Text is required for embedding.' }, 400);
+    }
+
+    // Generate embedding using Cloudflare Workers AI
+    const embeddingResponse = await c.env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [text] });
+    const vector = embeddingResponse.data[0];
+    const id = crypto.randomUUID();
+
+    await c.env.DEEPLEARN_INDEX.upsert([
+      {
+        id,
+        values: vector,
+        metadata: {
+          ...metadata,
+          timestamp: Date.now()
+        }
+      }
+    ]);
+
+    return c.json({ ok: true, id, vector_length: vector.length });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to generate embedding and store in Vectorize.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/admin/content/auto-publish-expired', async (c) => {
   const reviewerAccess = await assertContentReviewAccess(c);
   if (reviewerAccess.error) return reviewerAccess.error;
@@ -5574,7 +5842,14 @@ app.post('/api/admin/content/posts/:postId/status', async (c) => {
     });
 
     if (nextStatus === 'published') {
-      await triggerPagesDeployHookIfConfigured(c.env, `publish:${postId}`);
+      c.executionCtx.waitUntil((async () => {
+        try {
+          await triggerPagesDeployHookIfConfigured(c.env, `publish:${postId}`);
+          await triggerOmnichannelDistribution(c.env, postId);
+        } catch (e) {
+          console.error('Pages webhook or omnichannel distribution failed:', e);
+        }
+      })());
     }
 
     return c.json({
@@ -7045,6 +7320,63 @@ function defaultContentCanonicalUrl(slug) {
 
 function buildEvergreenSeedEntries() {
   return getEvergreenSeedEntries();
+}
+
+async function triggerOmnichannelDistribution(env, postId) {
+  try {
+    if (!env.DEEPLEARN_DB) return { ok: false, reason: 'no_db' };
+    
+    const post = await env.DEEPLEARN_DB.prepare(
+      `SELECT id, title, content_markdown, social_thread_text, video_script, source_urls_json
+       FROM content_posts WHERE id = ? LIMIT 1`
+    ).bind(postId).first();
+    
+    if (!post) return { ok: false, reason: 'post_not_found' };
+
+    const promises = [];
+    const sourceUrls = JSON.parse(post.source_urls_json || '[]');
+
+    // Blog Webhook (e.g. Medium API via Make/Zapier)
+    if (env.BLOG_WEBHOOK_URL && post.content_markdown) {
+      promises.push(
+        fetch(env.BLOG_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            post_id: post.id,
+            title: post.title,
+            content_markdown: post.content_markdown,
+            source_urls: sourceUrls
+          })
+        }).catch(err => console.error('Blog webhook failed:', err))
+      );
+    }
+
+    // Social Webhook (e.g. LinkedIn/X API via Make/Zapier)
+    if (env.SOCIAL_WEBHOOK_URL && post.social_thread_text) {
+      promises.push(
+        fetch(env.SOCIAL_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            post_id: post.id,
+            social_thread_text: post.social_thread_text,
+            title: post.title,
+            source_urls: sourceUrls
+          })
+        }).catch(err => console.error('Social webhook failed:', err))
+      );
+    }
+
+    if (promises.length > 0) {
+      await Promise.allSettled(promises);
+    }
+    
+    return { ok: true };
+  } catch (error) {
+    console.error('Omnichannel distribution failed:', error);
+    return { ok: false, reason: error.message };
+  }
 }
 
 async function triggerPagesDeployHookIfConfigured(env, reason = 'content-publish') {
@@ -9171,6 +9503,335 @@ function generateLabRunOutput({ pathKey, toolType, modelName, input }) {
     }
   };
 }
+// =============================================================================
+// DAIY KEYWORD ROTATION — for daily variety of doctor-focused prompts
+// =============================================================================
+const DAIY_KEYWORDS = [
+  'Systematic Review',
+  'Patient Education Letter',
+  'Clinical Audit',
+  'Conference Poster Abstract',
+  'LinkedIn Post for Doctors',
+  'Research Protocol Outline',
+  'Patient FAQ Sheet',
+  'Grand Rounds Slide Deck Outline',
+  'RCT Methodology Summary',
+  'Startup Pitch for Clinician-Founders',
+  'Literature Review',
+  'Case Report Draft',
+  'Meta-Analysis Summary',
+  'Social Media Thread on Clinical AI',
+];
+
+// =============================================================================
+// generateModelSpotlightDraft — HuggingFace trending → AI revolution paragraph
+// =============================================================================
+async function generateModelSpotlightDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `model-spotlight-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Model spotlight already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Fetch top HuggingFace trending models
+  let models = [];
+  try {
+    const hfUrl = env.HUGGINGFACE_TRENDING_URL || 'https://huggingface.co/api/models?sort=trending&limit=10&full=true';
+    const hfResp = await fetch(hfUrl, { headers: { 'Accept': 'application/json' } });
+    if (hfResp.ok) models = await hfResp.json();
+  } catch { models = []; }
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new Error('Failed to fetch HuggingFace trending models.');
+  }
+  const topModels = models.slice(0, 5).map((m) => ({
+    id: m?.id || m?.modelId || '',
+    pipeline: m?.pipeline_tag || 'general',
+    downloads: Number(m?.downloads || 0),
+    likes: Number(m?.likes || 0),
+  })).filter((m) => m.id);
+
+  if (topModels.length === 0) throw new Error('No valid HuggingFace models found.');
+
+  const modelList = topModels.map((m, i) => `${i + 1}. ${m.id} (task: ${m.pipeline}, downloads: ${m.downloads}, likes: ${m.likes})`).join('\n');
+
+  const prompt = `You are the Editor of GreyBrain Academy, writing for doctors who are new to AI.
+Today's date: ${publishDate}
+
+Here are today's top trending models on HuggingFace:
+${modelList}
+
+Choose the SINGLE most clinically interesting or surprising model from this list.
+Write a 160–200 word paragraph in "AI Revolution" style — think: "this is what's changing medicine right now."
+Tone: Optimistic but precise. No hype. No emojis. Doctor-to-doctor.
+Explain: what it does, why it matters clinically, what doctors should watch for.
+
+Return strict JSON only (no markdown) with keys:
+{
+  "hf_model_id": string,        // The model id, e.g. "google/gemma-2-27b-it"
+  "hf_model_author": string,    // The author part
+  "hf_model_pipeline": string,  // pipeline_tag value
+  "title": string,              // e.g. "Model Spotlight: Gemma 2 27B — Reasoning at the Bedside"
+  "summary": string,            // Under 220 chars
+  "content_markdown": string,   // The 160-200 word AI revolution paragraph
+  "tags": string[]              // 3-5 lowercase tags
+}`;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelForDailyContent({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`Model Spotlight AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown || !p.hf_model_id) {
+    throw new Error('Model Spotlight AI response missing required fields.');
+  }
+
+  const postId = existing?.id || crypto.randomUUID();
+  const hfResolvedAuthor = p.hf_model_author || (p.hf_model_id.includes('/') ? p.hf_model_id.split('/')[0] : '');
+  const hfModelDownloads = topModels.find((m) => m.id === p.hf_model_id)?.downloads || 0;
+  const hfModelLikes = topModels.find((m) => m.id === p.hf_model_id)?.likes || 0;
+
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, path, content_type, tags_json, status,
+      hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
+      model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, 'productivity', 'model_spotlight', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ms-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary, content_markdown=excluded.content_markdown,
+      hf_model_id=excluded.hf_model_id, hf_model_author=excluded.hf_model_author,
+      hf_model_pipeline=excluded.hf_model_pipeline, hf_model_downloads=excluded.hf_model_downloads,
+      hf_model_likes=excluded.hf_model_likes, status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.hf_model_id, 160), clean(hfResolvedAuthor, 80),
+    clean(p.hf_model_pipeline || topModels[0]?.pipeline || 'general', 80),
+    hfModelDownloads, hfModelLikes,
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'model_spotlight', status: 'success', message: `Model spotlight for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, hf_model_id: p.hf_model_id };
+}
+
+// =============================================================================
+// generateDaiyDraft — Doctor keywords → copiable prompt + preview + model links
+// =============================================================================
+const DAIY_SUGGESTED_MODELS = [
+  { name: 'Claude', url: 'https://claude.ai', note: 'Excellent for long documents' },
+  { name: 'Gemini', url: 'https://gemini.google.com', note: 'Google Search grounded' },
+  { name: 'Perplexity', url: 'https://perplexity.ai', note: 'Real-time web search' },
+  { name: 'Qwen', url: 'https://chat.qwen.ai', note: 'Open source, strong reasoning' },
+  { name: 'MiniMax', url: 'https://chat.minimax.io', note: 'Long context specialist' },
+];
+
+async function generateDaiyDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `daiy-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `DAIY draft already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Rotate keyword by day-of-year
+  const dayOfYear = Math.floor((nowMs - new Date(`${publishDate.slice(0, 4)}-01-01`).getTime()) / 86400000);
+  const keyword = DAIY_KEYWORDS[dayOfYear % DAIY_KEYWORDS.length];
+
+  const prompt = `You are the Prompt Curator at GreyBrain Academy, creating daily AI prompts for busy doctors.
+Today's topic: "${keyword}"
+Today's date: ${publishDate}
+
+Write one exceptional, copy-paste-ready prompt that:
+- Is 50–80 words long
+- Results in a highly useful clinical output (not generic)
+- Any doctor can use immediately by pasting into Claude, Gemini, Perplexity, Qwen, or MiniMax
+- Assumes the doctor has a clinical document/paper/case to work with
+
+Return strict JSON only (no markdown):
+{
+  "title": string,             // e.g. "Today's DAIY Prompt: Systematic Review"
+  "summary": string,           // Under 180 chars, hook sentence
+  "prompt_text": string,       // The 50-80 word prompt doctors should copy
+  "prompt_output_preview": string,  // 2-3 sentences describing what kind of answer they'll get
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelForDailyContent({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`DAIY AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.prompt_text || !p.title) throw new Error('DAIY AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, path, content_type, tags_json,
+      prompt_text, prompt_output_preview, prompt_keyword, suggested_models_json,
+      status, model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, 'productivity', 'daiy_prompt', ?, ?, ?, ?, ?, 'draft', ?, 'daiy-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary,
+      content_markdown=excluded.content_markdown,
+      prompt_text=excluded.prompt_text, prompt_output_preview=excluded.prompt_output_preview,
+      prompt_keyword=excluded.prompt_keyword, suggested_models_json=excluded.suggested_models_json,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary || '', 240),
+    clean(p.prompt_output_preview || '', 1000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.prompt_text, 1200), clean(p.prompt_output_preview || '', 1000),
+    clean(keyword, 80), JSON.stringify(DAIY_SUGGESTED_MODELS),
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'daiy_prompt', status: 'success', message: `DAIY prompt for ${publishDate} (${keyword})`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, keyword };
+}
+
+// =============================================================================
+// generateHealthNewsDraft — Gemini Search Grounding → AI healthcare news digest
+// =============================================================================
+async function generateHealthNewsDraft(env, { apiKey, force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `health-news-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Health news already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Use Gemini with google_search grounding to fetch real-time news
+  const prompt = `You are the Industry Intelligence Editor at GreyBrain Academy, curating daily AI healthcare news for doctor-founders.
+Today's date: ${publishDate}
+
+Search today's news on: AI healthcare startups, clinical AI FDA clearances, digital health funding rounds, AI in diagnostics, health tech entrepreneurship, and AI regulation in medicine.
+
+Select the 3 most important stories a doctor-founder should know today. For each story provide:
+- A crisp, precise headline (not clickbait)
+- A 2-sentence summary that explains: what happened + why it matters for clinician-entrepreneurs
+- The primary source/publication name
+
+Return strict JSON only (no markdown):
+{
+  "title": string,             // e.g. "AI Health Intelligence — March 10"
+  "summary": string,           // Under 220 chars
+  "content_markdown": string,  // Markdown with 3 news items, each with ## headline, summary, Source: X
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    // Always use Gemini for health news (Google Search grounding)
+    result = await callGeminiForDailyContentWithSearch({ apiKey, model: 'gemini-2.0-flash', prompt });
+  } catch (e) {
+    // Fallback to standard Gemini without search if grounding fails
+    try {
+      result = await callGeminiForDailyContent({ apiKey, model: 'gemini-2.0-flash', prompt });
+    } catch (e2) {
+      throw new Error(`Health News AI call failed: ${e2.message}`);
+    }
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown) throw new Error('Health News AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, path, content_type, tags_json,
+      status, model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, 'entrepreneurship', 'health_news', ?, 'draft', ?, 'hn-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary,
+      content_markdown=excluded.content_markdown, status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary || '', 240), clean(p.content_markdown, 16000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : ['ai-health', 'entrepreneurship']),
+    result.model || 'gemini-2.0-flash', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'health_news', status: 'success', message: `Health news for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title };
+}
+
+// Gemini with Google Search Grounding (Dynamic Retrieval)
+async function callGeminiForDailyContentWithSearch({ apiKey, model, prompt }) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        tools: [{ googleSearch: {} }],
+        systemInstruction: {
+          parts: [{ text: 'You are a clinically cautious editorial assistant. Return valid JSON only.' }]
+        },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      })
+    }
+  );
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Gemini Search Grounding failed: ${details || response.status}`);
+  }
+  const payload = await response.json();
+  const content = Array.isArray(payload?.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts.map((part) => String(part?.text || '')).join('\n').trim()
+    : '';
+  if (!content) throw new Error('Gemini Search returned empty content.');
+  return { payload: parseJsonObject(content), model };
+}
+
+async function fetchAnalyticsInsightsStr(db) {
+  try {
+    const rows = await db.prepare(
+      `SELECT tags_json FROM content_posts WHERE status = 'published' AND tags_json IS NOT NULL`
+    ).all();
+    const tagCounts = {};
+    if (rows.success && rows.results) {
+      for (const row of rows.results) {
+        try {
+          const tags = JSON.parse(row.tags_json || '[]');
+          for (const t of tags) {
+            if (t) tagCounts[t] = (tagCounts[t] || 0) + 1;
+          }
+        } catch(e){}
+      }
+    }
+    const sortedTags = Object.entries(tagCounts)
+      .sort((a,b) => b[1] - a[1])
+      .map(e => e[0])
+      .slice(0, 5);
+    return sortedTags.length > 0 ? `Trending topics to cover if relevant: ${sortedTags.join(', ')}` : '';
+  } catch (e) {
+    return '';
+  }
+}
 
 async function runScheduledContentGeneration(env, cron) {
   if (!env.DEEPLEARN_DB) {
@@ -9179,7 +9840,32 @@ async function runScheduledContentGeneration(env, cron) {
 
   try {
     await ensureOpsSchema(env.DEEPLEARN_DB);
-    await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: '' });
+    // Get server-side API key for scheduled cron runs (coordinator BYOK used for on-demand only)
+    const scheduledApiKey = env.GROQ_API_KEY || env.GEMINI_API_KEY || '';
+    const geminiKey = env.GEMINI_API_KEY || scheduledApiKey;
+
+    const insights = await fetchAnalyticsInsightsStr(env.DEEPLEARN_DB);
+
+    // Core daily brief (uses existing logic — requires BYOK, skip if no key configured)
+    if (scheduledApiKey) {
+      await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: scheduledApiKey, insights });
+    }
+
+    // NEW: Model Spotlight (uses Groq or Gemini)
+    if (scheduledApiKey) {
+      await generateModelSpotlightDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: DAIY prompt (uses Groq or Gemini)
+    if (scheduledApiKey) {
+      await generateDaiyDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Health News — always uses Gemini with Search Grounding
+    if (geminiKey) {
+      await generateHealthNewsDraft(env, { apiKey: geminiKey, force: false });
+    }
+
     await autoPublishExpiredDrafts(env, { runType: `scheduled:auto-publish:${cron || 'hourly'}` });
   } catch (error) {
     await recordContentRun(env.DEEPLEARN_DB, {
@@ -9248,7 +9934,7 @@ async function autoPublishExpiredDrafts(env, { runType = 'auto-publish' } = {}) 
   };
 }
 
-async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, providerOverride, modelOverride }) {
+async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, providerOverride, modelOverride, insights }) {
   const db = env.DEEPLEARN_DB;
   if (!db) {
     throw new Error('D1 is not configured.');
@@ -9282,13 +9968,33 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
     throw new Error('Missing BYOK API key. Provide api_key for Gemini, Claude, or Grok generation.');
   }
 
-  const prompt = buildDailyPrompt({ publishDate, sourceSnapshot });
+  const prompt = buildDailyPrompt({ publishDate, sourceSnapshot, insights });
+
+  let contextText = '';
+  if (env.DEEPLEARN_INDEX && env.AI && sourceSnapshot.length > 0) {
+    try {
+      const queryText = sourceSnapshot.map(s => s.title).join(' ');
+      const embeddingResponse = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [queryText] });
+      const vector = embeddingResponse.data[0];
+      const matchResult = await env.DEEPLEARN_INDEX.query(vector, { topK: 3, returnMetadata: true });
+      if (matchResult.matches && matchResult.matches.length > 0) {
+        contextText = matchResult.matches
+          .filter(m => m.metadata && m.metadata.text)
+          .map(m => m.metadata.text)
+          .join('\\n\\n');
+      }
+    } catch (e) {
+      console.error('Vectorize query failed:', e);
+    }
+  }
+
   const generationResult = await callContentModelForDailyContent({
     env,
     provider: resolveContentGenerationProvider(providerOverride || 'groq'),
     apiKey,
     modelOverride: modelOverride || '',
-    prompt
+    prompt,
+    context: contextText
   });
   const normalized = validateGeneratedContent(generationResult.payload, sourceSnapshot);
 
@@ -9297,11 +10003,22 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
   const sourceUrls = normalized.sources.map((source) => source.url);
   const tags = normalized.tags.length > 0 ? normalized.tags : ['clinical-ai', 'greybrain-daily'];
 
+  const r2AssetKey = `daily/${dateSlug}-${postId}.json`;
+  if (env.DEEPLEARN_ASSETS) {
+    try {
+      await env.DEEPLEARN_ASSETS.put(r2AssetKey, JSON.stringify(normalized, null, 2), {
+        httpMetadata: { contentType: 'application/json' }
+      });
+    } catch (err) {
+      console.error('Failed to save asset to R2:', err);
+    }
+  }
+
   const upsertResult = await db.prepare(
     `INSERT INTO content_posts (
       id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, model_name,
-      prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?)
+      prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms, r2_asset_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       slug = excluded.slug,
       title = excluded.title,
@@ -9317,7 +10034,8 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
       generated_at_ms = excluded.generated_at_ms,
       approved_at_ms = NULL,
       published_at_ms = NULL,
-      updated_at_ms = excluded.updated_at_ms`
+      updated_at_ms = excluded.updated_at_ms,
+      r2_asset_key = excluded.r2_asset_key`
   )
     .bind(
       postId,
@@ -9333,7 +10051,8 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
       DAILY_PROMPT_VERSION,
       nowMs,
       nowMs,
-      nowMs
+      nowMs,
+      r2AssetKey
     )
     .run();
 
@@ -9369,17 +10088,21 @@ async function recordContentRun(db, { runType, status, message, postId }) {
     .run();
 }
 
-function buildDailyPrompt({ publishDate, sourceSnapshot }) {
+function buildDailyPrompt({ publishDate, sourceSnapshot, insights }) {
+  const insightsInstruction = insights ? `\nAnalytics Insight: ${insights}\n` : '';
   return `You are the Content Editor for GreyBrain Academy.
 You are preparing a daily doctor-facing editorial brief for the public academy feed.
 Date: ${publishDate}
-
+${insightsInstruction}
 Output STRICT JSON only (no markdown fences) with keys:
 {
   "title": string,
   "summary": string,
   "path": "productivity" | "research" | "entrepreneurship",
   "content_markdown": string,
+  "social_thread_text": string,
+  "video_script": string,
+  "seo_metadata": string,
   "tags": string[],
   "sources": [{"title": string, "url": string, "date": string}]
 }
@@ -9416,12 +10139,14 @@ ${sourceSnapshot.map((item, idx) => `${idx + 1}. ${item.title} | ${item.url} | $
 `;
 }
 
-async function callContentModelForDailyContent({ env, provider, apiKey, modelOverride, prompt }) {
+async function callContentModelForDailyContent({ env, provider, apiKey, modelOverride, prompt, context = '' }) {
   if (provider === 'gemini') {
     return await callGeminiForDailyContent({
+      env,
       apiKey,
       model: modelOverride || 'gemini-2.5-pro',
-      prompt
+      prompt,
+      context
     });
   }
 
@@ -9429,7 +10154,8 @@ async function callContentModelForDailyContent({ env, provider, apiKey, modelOve
     return await callAnthropicForDailyContent({
       apiKey,
       model: modelOverride || 'claude-3-7-sonnet-latest',
-      prompt
+      prompt,
+      context
     });
   }
 
@@ -9447,7 +10173,8 @@ async function callContentModelForDailyContent({ env, provider, apiKey, modelOve
     baseUrl,
     model,
     prompt,
-    providerLabel: provider === 'xai' ? 'xAI' : 'Groq'
+    providerLabel: provider === 'xai' ? 'xAI' : 'Groq',
+    context
   });
 }
 
@@ -9537,9 +10264,19 @@ async function callOpenAiCompatForDailyContent({ env, apiKey, baseUrl, model, pr
   };
 }
 
-async function callGeminiForDailyContent({ apiKey, model, prompt }) {
+async function callGeminiForDailyContent({ env, apiKey, model, prompt, context = '' }) {
+  const accountId = '9f4998a66a5d7bd7a230d0222544fbe6';
+  const gatewayName = env?.AI_GATEWAY_NAME || 'deeplearn-gateway';
+  const baseUrl = env?.AI_GATEWAY_NAME
+    ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayName}/google-ai-studio/v1beta/models`
+    : 'https://generativelanguage.googleapis.com/v1beta/models';
+
+  const systemInstruction = context
+    ? `You are a clinically cautious editorial assistant. Return valid JSON only. Use the following context if relevant:\n\n${context}`
+    : 'You are a clinically cautious editorial assistant. Return valid JSON only.';
+
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    `${baseUrl}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     {
       method: 'POST',
       headers: {
@@ -9551,7 +10288,7 @@ async function callGeminiForDailyContent({ apiKey, model, prompt }) {
           responseMimeType: 'application/json'
         },
         systemInstruction: {
-          parts: [{ text: 'You are a clinically cautious editorial assistant. Return valid JSON only.' }]
+          parts: [{ text: systemInstruction }]
         },
         contents: [{ role: 'user', parts: [{ text: prompt }] }]
       })
@@ -9703,11 +10440,18 @@ function validateGeneratedContent(payload, sourceSnapshot) {
     throw new Error('Generated content requires at least 2 verified sources.');
   }
 
+  const socialThreadText = String(payload?.social_thread_text || '').trim();
+  const videoScript = String(payload?.video_script || '').trim();
+  const seoMetadata = String(payload?.seo_metadata || '').trim();
+
   return {
     title,
     summary,
     path,
     content_markdown: contentMarkdown.slice(0, 48000),
+    social_thread_text: socialThreadText,
+    video_script: videoScript,
+    seo_metadata: seoMetadata,
     tags,
     sources
   };

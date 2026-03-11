@@ -473,6 +473,13 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [coordinatorView, setCoordinatorView] = useState('operations');
+  const [ceApiKey, setCeApiKey] = useState(() => { try { return sessionStorage.getItem('ce_api_key') || ''; } catch { return ''; } });
+  const [ceQueue, setCeQueue] = useState([]);
+  const [ceQueueLoading, setCeQueueLoading] = useState(false);
+  const [ceGenerating, setCeGenerating] = useState(false);
+  const [ceEditingId, setCeEditingId] = useState(null);
+  const [ceEditDraft, setCeEditDraft] = useState({});
+  const [cePublishing, setCePublishing] = useState(null);
   const [labRuns, setLabRuns] = useState([]);
   const [capstoneArtifacts, setCapstoneArtifacts] = useState([]);
   const [labTrendSeries, setLabTrendSeries] = useState([]);
@@ -2398,7 +2405,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             { id: 'crm', label: 'CRM Pipeline' },
             { id: 'counselor-knowledge', label: 'Counselor Knowledge' },
             { id: 'lab-ops', label: 'Lab Ops' },
-            { id: 'capstone-review', label: 'Capstone Review' }
+            { id: 'capstone-review', label: 'Capstone Review' },
+            { id: 'content-engine', label: '⚡ Content Engine' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -4164,7 +4172,317 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
+      {/* ────────────────── CONTENT ENGINE TAB ────────────────────────── */}
+      {isCoordinator && hasAdminAccess && coordinatorView === 'content-engine' && (() => {
+
+        const saveApiKey = (key) => {
+          setCeApiKey(key);
+          try { sessionStorage.setItem('ce_api_key', key); } catch { /* ignore */ }
+        };
+
+        const loadQueue = async () => {
+          setCeQueueLoading(true);
+          try {
+            const res = await fetch(apiUrl('/api/content/queue'), {
+              headers: { 'x-admin-secret': adminToken || '' }
+            });
+            const data = await res.json();
+            setCeQueue(data.posts || data || []);
+          } catch (err) {
+            setError('Could not load content queue: ' + err.message);
+          } finally {
+            setCeQueueLoading(false);
+          }
+        };
+
+        const generateContent = async (type) => {
+          if (!ceApiKey) { setError('Please enter your Gemini API key first.'); return; }
+          setCeGenerating(true);
+          try {
+            const res = await fetch(apiUrl('/api/content/generate'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify({ type, gemini_api_key: ceApiKey, groq_api_key: '' })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice(`✓ ${type === 'all' ? 'All content types' : type} drafted successfully.`);
+          } catch (err) {
+            setError('Generation failed: ' + err.message);
+          } finally {
+            setCeGenerating(false);
+          }
+        };
+
+        const startEdit = (post) => {
+          setCeEditingId(post.id);
+          setCeEditDraft({
+            title: post.title || '',
+            summary: post.summary || '',
+            content_markdown: post.content_markdown || '',
+            social_thread_text: post.social_thread_text || '',
+            video_script: post.video_script || '',
+            seo_metadata: post.seo_metadata || '',
+            prompt_text: post.prompt_text || '',
+            source_url: post.source_url || '',
+          });
+        };
+
+        const saveEdit = async () => {
+          if (!ceEditingId) return;
+          try {
+            const res = await fetch(apiUrl(`/api/content/posts/${ceEditingId}`), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify(ceEditDraft)
+            });
+            if (!res.ok) throw new Error(await res.text());
+            setCeEditingId(null);
+            setCeEditDraft({});
+            await loadQueue();
+            setNotice('Draft saved.');
+          } catch (err) {
+            setError('Save failed: ' + err.message);
+          }
+        };
+
+        const publishPost = async (postId) => {
+          setCePublishing(postId);
+          try {
+            const res = await fetch(apiUrl(`/api/admin/content/posts/${postId}/approve`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify({ status: 'published', approved: 'true' })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice('✓ Published! It will appear on the website now.');
+          } catch (err) {
+            setError('Publish failed: ' + err.message);
+          } finally {
+            setCePublishing(null);
+          }
+        };
+
+        const statusColor = (s) => {
+          if (s === 'published') return 'bg-emerald-100 text-emerald-700';
+          if (s === 'draft') return 'bg-amber-100 text-amber-700';
+          if (s === 'pending_review') return 'bg-blue-100 text-blue-700';
+          return 'bg-slate-100 text-slate-600';
+        };
+
+        return (
+          <div className="space-y-6">
+            {/* Header */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">⚡ Content Engine</h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Generate daily AI content (Model Spotlight, DAIY prompt, Health News), edit the draft, then hit <strong>Publish</strong> to go live on the website.
+                  </p>
+                </div>
+                <button
+                  className="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700"
+                  onClick={() => void loadQueue()}
+                  type="button"
+                  disabled={ceQueueLoading}
+                >
+                  {ceQueueLoading ? 'Loading...' : '↻ Refresh Queue'}
+                </button>
+              </div>
+
+              {/* BYOK Key Input */}
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 mb-4">
+                <p className="text-xs font-bold text-slate-600 uppercase tracking-widest mb-2">Gemini API Key (Session only — not stored on server)</p>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono"
+                    placeholder="AIza..."
+                    value={ceApiKey}
+                    onChange={(e) => saveApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                  {ceApiKey && (
+                    <button
+                      className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600"
+                      onClick={() => saveApiKey('')}
+                      type="button"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">Key is stored in sessionStorage and cleared when you close the browser tab.</p>
+              </div>
+
+              {/* Generate Buttons */}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  onClick={() => void generateContent('all')}
+                  type="button"
+                  disabled={ceGenerating || !ceApiKey}
+                >
+                  {ceGenerating ? 'Generating...' : '✦ Generate Today\'s Content (All)'}
+                </button>
+                {['model_spotlight', 'daiy_prompt', 'health_news'].map((type) => (
+                  <button
+                    key={type}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                    onClick={() => void generateContent(type)}
+                    type="button"
+                    disabled={ceGenerating || !ceApiKey}
+                  >
+                    + {type.replace(/_/g, ' ')}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Draft Queue */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-4 text-base font-bold text-slate-900">Content Queue</h3>
+
+              {ceQueue.length === 0 ? (
+                <div className="rounded-xl bg-slate-50 p-8 text-center">
+                  <p className="text-sm text-slate-500">No content in queue. Hit "Generate Today's Content" to create drafts.</p>
+                  <button
+                    className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                    onClick={() => void loadQueue()}
+                    type="button"
+                  >
+                    Load Queue
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[32rem] overflow-auto">
+                  {ceQueue.map((post) => (
+                    <div key={post.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      {ceEditingId === post.id ? (
+                        /* Inline Edit Form */
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Editing draft</span>
+                            <button className="text-xs text-slate-400 hover:text-slate-700" onClick={() => setCeEditingId(null)} type="button">✕ Cancel</button>
+                          </div>
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+                            placeholder="Title"
+                            value={ceEditDraft.title}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, title: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Summary / description"
+                            value={ceEditDraft.summary}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, summary: e.target.value }))}
+                          />
+                          {post.content_type === 'daiy_prompt' && (
+                            <textarea
+                              className="w-full min-h-[8rem] rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono text-green-800 bg-[#0d1117]"
+                              placeholder="Prompt text (what doctors will copy)"
+                              value={ceEditDraft.prompt_text}
+                              onChange={(e) => setCeEditDraft((p) => ({ ...p, prompt_text: e.target.value }))}
+                            />
+                          )}
+                          <textarea
+                            className="w-full min-h-[6rem] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Full body / article markdown"
+                            value={ceEditDraft.content_markdown}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, content_markdown: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm bg-blue-50"
+                            placeholder="Social Thread (LinkedIn / X)"
+                            value={ceEditDraft.social_thread_text || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, social_thread_text: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm bg-purple-50"
+                            placeholder="Video Script (Shorts / Reels)"
+                            value={ceEditDraft.video_script || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, video_script: e.target.value }))}
+                          />
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50"
+                            placeholder="SEO Metadata"
+                            value={ceEditDraft.seo_metadata || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, seo_metadata: e.target.value }))}
+                          />
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Source URL (optional)"
+                            value={ceEditDraft.source_url}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, source_url: e.target.value }))}
+                          />
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                              onClick={() => void saveEdit()}
+                              type="button"
+                            >
+                              Save Draft
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Draft Row */
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${statusColor(post.status)}`}>
+                                {post.status}
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-400 uppercase">{post.content_type?.replace(/_/g, ' ')}</span>
+                              <span className="text-[10px] text-slate-400">{post.date || ''}</span>
+                            </div>
+                            <p className="text-sm font-semibold text-slate-900 truncate">{post.title || 'Untitled draft'}</p>
+                            {post.summary && <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{post.summary}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <button
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+                              onClick={() => startEdit(post)}
+                              type="button"
+                            >
+                              ✏ Edit
+                            </button>
+                            {post.status !== 'published' && (
+                              <button
+                                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60"
+                                onClick={() => void publishPost(post.id)}
+                                type="button"
+                                disabled={cePublishing === post.id}
+                              >
+                                {cePublishing === post.id ? 'Publishing...' : '▶ Publish'}
+                              </button>
+                            )}
+                            {post.status === 'published' && post.slug && (
+                              <a
+                                href={`https://edu.greybrain.ai/briefs/${post.slug}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 no-underline"
+                              >
+                                View Live ↗
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {isTeacher && (
+
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <h3 className="mb-3 text-lg font-bold text-slate-900">Teacher Studio</h3>
           <p className="mb-3 text-sm text-slate-600">

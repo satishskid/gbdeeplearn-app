@@ -49,6 +49,33 @@ export async function fetchPublishedBriefs(limit = 100) {
   return Array.isArray(payload?.posts) ? payload.posts : [];
 }
 
+export async function fetchLatestByType(contentType) {
+  try {
+    const response = await fetch(
+      `${getContentApiOrigin()}/api/content/posts?limit=1&content_type=${encodeURIComponent(contentType)}`
+    );
+    if (!response.ok) return null;
+    const payload = await response.json();
+    const posts = Array.isArray(payload?.posts) ? payload.posts : [];
+    return posts[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function postLike(postId) {
+  try {
+    const response = await fetch(`${getContentApiOrigin()}/api/content/posts/${encodeURIComponent(postId)}/like`, {
+      method: 'POST'
+    });
+    const payload = await response.json();
+    return { ok: response.ok, likes: payload?.community_likes ?? 0 };
+  } catch {
+    return { ok: false, likes: 0 };
+  }
+}
+
+
 export async function fetchPublishedBriefBySlug(slug) {
   const response = await fetch(`${getContentApiOrigin()}/api/content/posts/${encodeURIComponent(slug)}`);
   const payload = await response.json();

@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import AutoRagChat from '../components/AutoRagChat.jsx';
 
 const {
   title = 'GreyBrain Academy',
@@ -113,5 +114,6 @@ const isPublicNav = !isAppNav && !isPlatformNav;
         })();
       </script>
     ) : null}
+    <AutoRagChat client:load />
   </body>
 </html>
