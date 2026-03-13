@@ -100,7 +100,7 @@ function resolveGoogleAllowedHosts() {
     .filter(Boolean);
 
   if (configured.length > 0) return configured;
-  return ['edu.greybrain.ai', 'gbdeeplearn.pages.dev', 'localhost', '127.0.0.1'];
+  return ['med.greybrain.ai', 'gbdeeplearn.pages.dev', 'localhost', '127.0.0.1'];
 }
 
 function isGoogleAuthEnabledForHost(hostname) {
@@ -425,7 +425,7 @@ export default function WebinarLeadForm({
     if (!googleAuthAvailable) {
       setStatus('error');
       setMessage(
-        `Google sign-in is not enabled on ${currentHost || 'this domain'}. Use edu.greybrain.ai or add this domain in Firebase Auth > Settings > Authorized domains.`
+        `Google sign-in is not enabled on ${currentHost || 'this domain'}. Use med.greybrain.ai or add this domain in Firebase Auth > Settings > Authorized domains.`
       );
       return;
     }
@@ -785,7 +785,7 @@ export default function WebinarLeadForm({
 
         {showGoogleDomainHint ? (
           <p className="mt-3 text-xs text-amber-700">
-            Google enrollment is enabled on edu.greybrain.ai. Current host: {currentHost || 'unknown'}.
+            Google enrollment is enabled on med.greybrain.ai. Current host: {currentHost || 'unknown'}.
           </p>
         ) : null}
 
@@ -913,7 +913,7 @@ export default function WebinarLeadForm({
           ) : null}
           {showGoogleDomainHint ? (
             <p className="mt-2 text-xs text-amber-700">
-              Google enrollment is enabled on edu.greybrain.ai. Current host: {currentHost || 'unknown'}.
+              Google enrollment is enabled on med.greybrain.ai. Current host: {currentHost || 'unknown'}.
             </p>
           ) : null}
         </div>

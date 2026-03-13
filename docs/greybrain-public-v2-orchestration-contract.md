@@ -3,7 +3,7 @@
 ## Objective
 Ship the public-site redesign as a controlled system update, not a sequence of disconnected cosmetic edits.
 
-This contract exists to prevent drift while redesigning `edu.greybrain.ai`.
+This contract exists to prevent drift while redesigning `med.greybrain.ai`.
 
 ## Non-Negotiable Outcome
 The public site must feel like:

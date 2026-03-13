@@ -1,4 +1,4 @@
-import AuthRoleGate from './AuthRoleGate';
+import AuthRoleGate from '../shared/AuthRoleGate';
 import ChatInterface from './ChatInterface';
 
 export default function ProtectedTutorPanel() {

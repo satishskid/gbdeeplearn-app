@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiUrl } from '../lib/api';
 import { preferredPlatformTab } from '../lib/userRoles';
+import PlatformManuals from './PlatformManuals';
 
 const ROLE_TABS = [
   { id: 'coordinator', label: 'Course Coordinator / Content Editor' },
@@ -9,7 +10,7 @@ const ROLE_TABS = [
   { id: 'cto', label: 'CTO / Platform Admin' }
 ];
 
-const PUBLIC_SITE_URL = 'https://edu.greybrain.ai';
+const PUBLIC_SITE_URL = 'https://med.greybrain.ai';
 const CONTENT_PATH_META = {
   productivity: {
     label: 'Practice',
@@ -449,6 +450,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
   const [contentPosts, setContentPosts] = useState([]);
+  const [showDraftsOnly, setShowDraftsOnly] = useState(false);
   const [organizations, setOrganizations] = useState([]);
   const [cohorts, setCohorts] = useState([]);
   const [courseModules, setCourseModules] = useState([]);
@@ -473,7 +475,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [coordinatorView, setCoordinatorView] = useState('operations');
-  const [ceApiKey, setCeApiKey] = useState(() => { try { return sessionStorage.getItem('ce_api_key') || ''; } catch { return ''; } });
+  const [ceApiKey, setCeApiKey] = useState(() => { try { return sessionStorage.getItem('session_gemini_key') || sessionStorage.getItem('ce_api_key') || ''; } catch { return ''; } });
+  const [sessionGeminiKey, setSessionGeminiKey] = useState(() => { try { return sessionStorage.getItem('session_gemini_key') || ''; } catch { return ''; } });
+  const [showAiSettings, setShowAiSettings] = useState(false);
   const [ceQueue, setCeQueue] = useState([]);
   const [ceQueueLoading, setCeQueueLoading] = useState(false);
   const [ceGenerating, setCeGenerating] = useState(false);
@@ -642,6 +646,11 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     notes: '',
     nextActionAt: ''
   });
+  const [homepageConfig, setHomepageConfig] = useState({
+    ticker_text: 'The doctors who master AI today will define the future of medicine tomorrow.'
+  });
+  const [loadingHomepageConfig, setLoadingHomepageConfig] = useState(false);
+
   const [counselorKnowledge, setCounselorKnowledge] = useState([]);
   const [loadingCounselorKnowledge, setLoadingCounselorKnowledge] = useState(false);
   const [knowledgeForm, setKnowledgeForm] = useState(defaultCounselorKnowledgeForm);
@@ -1101,7 +1110,70 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator]);
 
+  const fetchHomepageConfig = async () => {
+    if (!adminHeadersReady) return;
+    setLoadingHomepageConfig(true);
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/homepage/config`, { headers: adminHeaders });
+      const data = await resp.json();
+      if (data.config_json) {
+        setHomepageConfig(JSON.parse(data.config_json));
+      }
+    } catch (err) {
+      console.error('Failed to fetch homepage config:', err);
+    } finally {
+      setLoadingHomepageConfig(false);
+    }
+  };
+
+  const saveHomepageConfig = async (newConfig) => {
+    setLoadingHomepageConfig(true);
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/homepage/config`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ config_json: JSON.stringify(newConfig) })
+      });
+      if (resp.ok) {
+        setHomepageConfig(newConfig);
+        setNotice('Homepage configuration updated.');
+      } else {
+        const errorData = await resp.json();
+        setError(`Failed to save config: ${errorData.error}`);
+      }
+    } catch (err) {
+      setError(`Failed to save config: ${err.message}`);
+    } finally {
+      setLoadingHomepageConfig(false);
+    }
+  };
+
+  const toggleSpotlight = async (postId, currentStatus) => {
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/content/posts/${postId}/spotlight`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ is_spotlight: !currentStatus })
+      });
+      if (resp.ok) {
+        setContentPosts((prev) =>
+          prev.map((p) => (p.id === postId ? { ...p, is_spotlight: !currentStatus } : p))
+        );
+        setNotice(`Spotlight status updated for ${postId}`);
+      }
+    } catch (err) {
+      setError(`Failed to toggle spotlight: ${err.message}`);
+    }
+  };
+
   useEffect(() => {
+    if (activeRole === 'coordinator' && coordinatorView === 'homepage-control') {
+      void fetchHomepageConfig();
+    }
+  }, [activeRole, coordinatorView, adminHeadersReady]);
+
+  useEffect(() => {
+
     if (!hasAdminAccess) return;
     if (!adminHeadersReady) return;
     if (!isCoordinator) return;
@@ -2071,7 +2143,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         force: false,
         provider: contentGeneratorForm.provider,
         model: contentGeneratorForm.model.trim(),
-        api_key: contentGeneratorForm.apiKey.trim()
+        api_key: (sessionGeminiKey || contentGeneratorForm.apiKey).trim()
       })
     });
     const payload = await response.json();
@@ -2082,6 +2154,28 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     }
 
     return `Draft generated: ${payload?.generated?.title || 'Untitled brief'}`;
+  };
+
+  const createManualDraft = async (type = 'daily_brief') => {
+    const response = await fetch(apiUrl('/api/admin/content/posts'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        content_type: type,
+        path: 'productivity',
+        title: 'Untitled Draft',
+        summary: 'Manual skeleton draft.',
+        content_markdown: '# New ' + type.replace(/_/g, ' ') + '\n\nEdit this content...'
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Manual draft creation failed.');
+
+    await loadConsoleData();
+    if (payload.post) {
+      loadContentIntoEditor(payload.post);
+    }
+    return `Manual draft created for ${type}.`;
   };
 
   const loadContentIntoEditor = (post) => {
@@ -2351,13 +2445,22 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           <h2 className="text-2xl font-extrabold text-slate-900">Role-Based Operations</h2>
           <p className="mt-1 text-sm text-slate-600">Teacher, Coordinator, Learner, and CTO control surface.</p>
         </div>
-        <button
-          className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          onClick={() => void loadConsoleData()}
-          type="button"
-        >
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={`rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold transition ${sessionGeminiKey ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-white text-slate-700'} hover:bg-slate-50`}
+            onClick={() => setShowAiSettings(true)}
+            type="button"
+          >
+            {sessionGeminiKey ? 'AI Settings (Override Active)' : 'AI Settings'}
+          </button>
+          <button
+            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            onClick={() => void loadConsoleData()}
+            type="button"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className={`mb-5 grid gap-3 ${isCoordinatorUser ? 'md:grid-cols-[1fr_16rem]' : 'md:grid-cols-1'}`}>
@@ -2534,6 +2637,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             { id: 'assignment-review', label: 'Assignment Review' },
             { id: 'live-teaching', label: 'Live Teaching' },
             { id: 'content-engine', label: '⚡ Content Engine' },
+            { id: 'homepage-control', label: '🏠 Homepage' },
+            { id: 'manuals', label: '📖 Platform Manuals' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -3396,6 +3501,102 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             <h2 className="text-2xl font-black tracking-tight text-slate-900">RAG Health & AI Telemetry</h2>
           </div>
           <RAGHealthDashboard user={user} roles={roles} actorFetch={actorFetch} />
+        </section>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'homepage-control' && (
+        <div className="space-y-6">
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-xl font-bold text-slate-900">Dynamic News Ticker</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Update the marquee text that scrolls at the top of the homepage.
+            </p>
+            <div className="flex gap-3">
+              <input
+                className="flex-1 rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                placeholder="Ticker message..."
+                value={homepageConfig.ticker_text || ''}
+                onChange={(e) => setHomepageConfig(prev => ({ ...prev, ticker_text: e.target.value }))}
+              />
+              <button
+                className="rounded-xl bg-slate-900 px-6 py-2 text-sm font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                onClick={() => void saveHomepageConfig(homepageConfig)}
+                disabled={loadingHomepageConfig}
+                type="button"
+              >
+                {loadingHomepageConfig ? 'Saving...' : 'Update Ticker'}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-xl font-bold text-slate-900">Model & Space Spotlights</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Select which HuggingFace Spaces or Models should appear with the "Spotlight" highlight card.
+            </p>
+            <div className="overflow-hidden rounded-xl border border-slate-200">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Content</th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {contentPosts
+                    .filter(p => !['daily_brief', 'blog'].includes(p.content_type))
+                    .map((post) => (
+                      <tr key={post.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-slate-900">{post.title}</p>
+                          <p className="text-xs text-slate-500">{post.hf_model_id || post.slug}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                            {post.content_type || 'post'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {post.is_spotlight ? (
+                            <span className="inline-flex items-center gap-1 font-bold text-cyan-600">
+                              <span className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse"></span>
+                              Spotlight
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">Regular</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            className={`rounded-lg px-3 py-1 text-xs font-bold transition-all ${
+                              post.is_spotlight 
+                                ? 'bg-red-50 text-red-600 hover:bg-red-100' 
+                                : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100'
+                            }`}
+                            onClick={() => void toggleSpotlight(post.id, post.is_spotlight)}
+                            type="button"
+                          >
+                            {post.is_spotlight ? 'Remove Spotlight' : 'Promote to Spotlight'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'manuals' && (
+
+        <section className="mb-12">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">Platform Command & Operations Manuals</h2>
+          </div>
+          <PlatformManuals />
         </section>
       )}
 
@@ -4684,14 +4885,39 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           }
         };
 
+        const createManualDraft = async (type) => {
+          setCeGenerating(true);
+          try {
+            const path = type === 'daiy_prompt' ? 'productivity' : 'research';
+            const res = await fetch(apiUrl('/api/admin/content/posts'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify({
+                title: `Manual ${type.replace(/_/g, ' ')} Draft`,
+                summary: 'Manual entry placeholder...',
+                path,
+                content_type: type === 'all' ? 'daily_brief' : type,
+                content_markdown: 'Paste content here...'
+              })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice(`✓ Manual ${type} draft created.`);
+          } catch (err) {
+            setError('Manual creation failed: ' + err.message);
+          } finally {
+            setCeGenerating(false);
+          }
+        };
+
         const generateContent = async (type) => {
-          if (!ceApiKey) { setError('Please enter your Gemini API key first.'); return; }
+          if (!ceApiKey && !sessionGeminiKey) { setError('Please enter your Gemini API key first or use AI Settings.'); return; }
           setCeGenerating(true);
           try {
             const res = await fetch(apiUrl('/api/content/generate'), {
               method: 'POST',
               headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
-              body: JSON.stringify({ type, gemini_api_key: ceApiKey, groq_api_key: '' })
+            body: JSON.stringify({ type, gemini_api_key: sessionGeminiKey || ceApiKey, groq_api_key: '' })
             });
             if (!res.ok) throw new Error(await res.text());
             await loadQueue();
@@ -4807,25 +5033,45 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               </div>
 
               {/* Generate Buttons */}
-              <div className="flex flex-wrap gap-2">
-                <button
-                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                  onClick={() => void generateContent('all')}
-                  type="button"
-                  disabled={ceGenerating || !ceApiKey}
-                >
-                  {ceGenerating ? 'Generating...' : '✦ Generate Today\'s Content (All)'}
-                </button>
-                {['model_spotlight', 'daiy_prompt', 'health_news'].map((type) => (
+              <div className="flex flex-wrap gap-3">
+                <div className="flex flex-col gap-1">
                   <button
-                    key={type}
-                    className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
-                    onClick={() => void generateContent(type)}
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    onClick={() => void generateContent('all')}
                     type="button"
-                    disabled={ceGenerating || !ceApiKey}
+                    disabled={ceGenerating || (!ceApiKey && !sessionGeminiKey)}
                   >
-                    + {type.replace(/_/g, ' ')}
+                    {ceGenerating ? 'Generating...' : '✦ Generate All Today'}
                   </button>
+                  <button
+                    className="text-[10px] text-slate-400 hover:text-slate-600 font-medium text-center"
+                    onClick={() => void createManualDraft('all')}
+                    type="button"
+                    disabled={ceGenerating}
+                  >
+                    (Manual Add)
+                  </button>
+                </div>
+
+                {['model_spotlight', 'daiy_prompt', 'health_news', 'spaces_spotlight'].map((type) => (
+                  <div key={type} className="flex flex-col gap-1">
+                    <button
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                      onClick={() => void generateContent(type)}
+                      type="button"
+                      disabled={ceGenerating || (!ceApiKey && !sessionGeminiKey)}
+                    >
+                      + {type.replace(/_/g, ' ')}
+                    </button>
+                    <button
+                      className="text-[10px] text-slate-400 hover:text-slate-600 font-medium text-center"
+                      onClick={() => void createManualDraft(type)}
+                      type="button"
+                      disabled={ceGenerating}
+                    >
+                      (Manual Add)
+                    </button>
+                  </div>
                 ))}
               </div>
             </div>
@@ -4950,7 +5196,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                             )}
                             {post.status === 'published' && post.slug && (
                               <a
-                                href={`https://edu.greybrain.ai/briefs/${post.slug}`}
+                                href={`https://med.greybrain.ai/briefs/${post.slug}`}
                                 target="_blank"
                                 rel="noreferrer"
                                 className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 no-underline"
@@ -5184,16 +5430,54 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                   setContentGeneratorForm((prev) => ({ ...prev, apiKey: event.target.value }))
                 }
               />
-              <button
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-                onClick={() => void runAction(generateDailyBrief)}
-                type="button"
-              >
-                Generate Today&apos;s Draft
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-slate-800 active:scale-[0.98]"
+                  onClick={() => void runAction(generateDailyBrief)}
+                  type="button"
+                >
+                  Generate AI Draft
+                </button>
+                <button
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
+                  onClick={() => void runAction(() => createManualDraft('daily_brief'))}
+                  title="Create a manual blank draft"
+                  type="button"
+                >
+                  ➕ Manual
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-4 text-base font-bold text-slate-900">Specific Content Fallbacks</h3>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { type: 'model_spotlight', label: 'Model Spotlight' },
+                  { type: 'daiy_prompt', label: 'DAIY Prompt' },
+                  { type: 'health_news', label: 'Health News' },
+                  { type: 'spaces_spotlight', label: 'Spaces' }
+                ].map((item) => (
+                  <button
+                    key={item.type}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-700 transition-all hover:bg-slate-50"
+                    onClick={() => void runAction(() => createManualDraft(item.type))}
+                    type="button"
+                  >
+                    + Manual {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-slate-800">Content Feed</h4>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors">
+              <input type="checkbox" checked={showDraftsOnly} onChange={(e) => setShowDraftsOnly(e.target.checked)} className="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500" />
+              <span className="font-medium">Show Drafts Only</span>
+            </label>
+          </div>
           <div className="overflow-hidden rounded-xl border border-slate-200">
             <table className="w-full border-collapse text-left text-sm">
               <thead className="bg-slate-100 text-slate-700">
@@ -5207,7 +5491,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 </tr>
               </thead>
               <tbody>
-                {contentPosts.map((post) => (
+                {contentPosts.filter(post => !showDraftsOnly || post.status === 'draft').map((post) => (
                   <tr key={post.id} className="border-t border-slate-200 bg-white">
                     <td className="px-3 py-2">
                       <p className="font-semibold text-slate-900">{post.title}</p>
@@ -5307,6 +5591,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 onChange={(event) => setContentEditorForm((prev) => ({ ...prev, contentType: event.target.value }))}
               >
                 <option value="daily_brief">Daily Brief</option>
+                <option value="news">News (Clinical Feed)</option>
+                <option value="blog">Blog</option>
                 <option value="workflow">Workflow</option>
                 <option value="wiki">Wiki</option>
                 <option value="model_watch">Model Watch</option>
@@ -5338,8 +5624,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 onChange={(event) => setContentEditorForm((prev) => ({ ...prev, sourceUrls: event.target.value }))}
               />
               <textarea
-                className="min-h-[280px] rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 md:col-span-2"
-                placeholder="content_markdown"
+                className="min-h-[480px] font-mono leading-relaxed rounded-xl border border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-800 md:col-span-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-colors"
+                placeholder="# Write your content draft here using Markdown...&#10;&#10;Use ## for headings, **bold**, *italics*, and [links](https://greybrain.ai).&#10;&#10;A great draft is concise, authoritative, and actionable for clinicians."
                 value={contentEditorForm.contentMarkdown}
                 onChange={(event) => setContentEditorForm((prev) => ({ ...prev, contentMarkdown: event.target.value }))}
               />
@@ -5620,6 +5906,69 @@ function RAGHealthDashboard({ user, roles, actorFetch }) {
           </table>
         </div>
       </section>
+      {showAiSettings && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-xl font-bold text-slate-900">AI Global Settings</h3>
+              <button
+                onClick={() => setShowAiSettings(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <p className="mb-6 text-sm text-slate-600">
+              Input a fresh Gemini API key to override the system defaults. This is useful if the primary key is exhausted or failing.
+              <span className="mt-2 block font-semibold text-amber-700">Persists for this browser session only.</span>
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">Gemini API Key Override</label>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm focus:border-violet-500 focus:ring-2 focus:ring-violet-200 focus:outline-none"
+                  placeholder="Paste your API key here..."
+                  value={sessionGeminiKey}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    setSessionGeminiKey(val);
+                    if (val) {
+                      sessionStorage.setItem('session_gemini_key', val);
+                    } else {
+                      sessionStorage.removeItem('session_gemini_key');
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowAiSettings(false)}
+                  className="flex-1 rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-lg shadow-slate-900/20 hover:bg-slate-800"
+                >
+                  Save & Close
+                </button>
+                <button
+                  onClick={() => {
+                    setSessionGeminiKey('');
+                    sessionStorage.removeItem('session_gemini_key');
+                    setShowAiSettings(false);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

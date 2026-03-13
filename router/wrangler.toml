@@ -1,5 +1,5 @@
 name = "greybrain-router"
 main = "src/index.js"
 compatibility_date = "2024-03-01"
-account_id = "9f4998a66a5d7bd7a230d0222544fbe6"
+account_id = "27f2f514327f6ec9f477357f545b58af"
 workers_dev = true

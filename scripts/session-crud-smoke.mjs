@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const adminToken = (process.env.ADMIN_API_TOKEN || process.env.DEEPLEARN_ADMIN_TOKEN || '').trim();
-const apiBase = (process.env.DEEPLEARN_API_BASE_URL || 'https://edu.greybrain.ai/api').replace(/\/+$/, '');
+const apiBase = (process.env.DEEPLEARN_API_BASE_URL || 'https://med.greybrain.ai/api').replace(/\/+$/, '');
 
 if (!adminToken) {
   console.error('Missing ADMIN_API_TOKEN or DEEPLEARN_ADMIN_TOKEN.');

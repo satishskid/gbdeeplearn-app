@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import RefresherInteractiveExperience from '../../components/RefresherInteractiveExperience.jsx';
+import CourseEnrollmentCTA from '../../components/CourseEnrollmentCTA.jsx';
 import { getCourseDetails, getCourseSummaries } from '../../lib/academyData';
 import { TRACKS } from '../../lib/tracks';
 
@@ -14,7 +15,7 @@ export async function getStaticPaths() {
 
 const { courseSlug } = Astro.props;
 const course = await getCourseDetails(courseSlug);
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 
 const pageTitle = `${course.name} | GreyBrain Course`;
 const pageDescription = course.shortDescription || 'GreyBrain healthcare AI course';
@@ -97,14 +98,12 @@ const outcomes = (course.goals.length > 0
         <span class="public-chip public-chip--light">{course.accessModel === 'registration' ? 'Unlock after registration' : 'Cohort + AI tutor'}</span>
       </div>
       <div class="mt-6 flex flex-wrap gap-2">
-        <a
-          href={course.ctaUrl || course.academyUrl}
-          target={course.ctaTarget === '_blank' ? '_blank' : undefined}
-          rel={course.ctaTarget === '_blank' ? 'noreferrer' : undefined}
-          class="public-inline-action"
-        >
-          {course.ctaLabel || 'Enroll'}
-        </a>
+        <CourseEnrollmentCTA 
+          client:load 
+          courseId={course.id || course.slug} 
+          courseSlug={course.slug} 
+          initialLabel={course.ctaLabel || 'Enroll'} 
+        />
         <a href="/courses" class="public-inline-action public-inline-action--ghost">Back to catalog</a>
       </div>
     </div>

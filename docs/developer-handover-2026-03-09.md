@@ -6,7 +6,7 @@ Primary public narrative:
 - **The AI Academy for Doctors Who Want to Practice, Publish, and Build**
 
 Primary product direction:
-1. Public academy site at `edu.greybrain.ai` should drive discovery, trust, and enrollment.
+1. Public academy site at `med.greybrain.ai` should drive discovery, trust, and enrollment.
 2. Internal platform should run end-to-end operations: content, cohorts, CRM, progress, and analytics.
 3. Learning journey should move from low-friction refresher to deeper cohort tracks.
 
@@ -158,7 +158,7 @@ Release gate:
 ```bash
 ADMIN_API_TOKEN=... \
 DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
-DEEPLEARN_PAGES_BASE_URL=https://edu.greybrain.ai \
+DEEPLEARN_PAGES_BASE_URL=https://med.greybrain.ai \
 npm run release:orchestrate
 ```
 

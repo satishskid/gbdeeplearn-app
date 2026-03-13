@@ -325,7 +325,7 @@ app.post('/api/chat', async (c) => {
       }
     }
 
-    const systemPrompt = `You are a helpful assistant for GreyBrain. Answer user questions based on the Context below. If a user asks for more information, provide the markdown links given in the Context. If the answer is not in the context, just answer generally based on your knowledge but invite them to explore edu.greybrain.ai.\n\nContext:\n${contextStr}`;
+    const systemPrompt = `You are a helpful assistant for GreyBrain. Answer user questions based on the Context below. If a user asks for more information, provide the markdown links given in the Context. If the answer is not in the context, just answer generally based on your knowledge but invite them to explore med.greybrain.ai.\n\nContext:\n${contextStr}`;
 
     const baseUrl = resolveGroqBaseUrl(c.env);
     const model = resolveGroqModel(c.env, baseUrl);
@@ -2073,6 +2073,112 @@ app.get('/api/admin/analytics/paths', async (c) => {
       },
       500
     );
+  }
+});
+
+// --- PUBLIC: Homepage configuration (ticker text, etc.) ---
+// Read-only, no auth required. Used by index.astro at build/SSR time.
+app.get('/api/homepage/config', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ config_json: '{}' });
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const config = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT config_json FROM homepage_config WHERE id = ?'
+    ).bind('global').first();
+    return c.json({ config_json: config?.config_json ?? '{}' });
+  } catch {
+    return c.json({ config_json: '{}' });
+  }
+});
+
+// --- PUBLIC: Fetch latest news & blogs (Replaces Medium RSS) ---
+app.get('/api/content/news', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ posts: [] });
+  const limit = Math.min(20, Math.max(1, parseInt(c.req.query('limit') || '6', 10)));
+  
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const { results } = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT slug, title, summary, published_at_ms, tags, type 
+       FROM content_posts 
+       WHERE type IN ('news', 'blog') AND status = 'published' 
+       ORDER BY published_at_ms DESC 
+       LIMIT ?`
+    ).bind(limit).all();
+    
+    // Format to match old getClinicalFeedPosts structure for simple integration
+    const posts = (results || []).map(r => {
+      let tags = [];
+      try { tags = JSON.parse(r.tags || '[]'); } catch { tags = []; }
+      return {
+        title: r.title || 'Untitled Update',
+        link: `/briefs/${r.slug}`,
+        date: r.published_at_ms > 0 ? new Date(r.published_at_ms).toISOString().slice(0, 10) : '',
+        summary: r.summary || 'Clinical AI update from GreyBrain.',
+        categories: tags
+      };
+    });
+    
+    return c.json({ posts });
+  } catch (error) {
+    return c.json({ posts: [], error: error.message });
+  }
+});
+
+app.get('/api/admin/homepage/config', async (c) => {
+
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const config = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT config_json FROM homepage_config WHERE id = ?'
+    ).bind('global').first();
+    
+    return c.json({ config_json: config ? config.config_json : '{}' });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.post('/api/admin/homepage/config', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    const { config_json } = await c.req.json();
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO homepage_config (id, config_json, updated_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         config_json = excluded.config_json,
+         updated_at_ms = excluded.updated_at_ms`
+    ).bind('global', config_json, Date.now()).run();
+
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.post('/api/admin/content/posts/:id/spotlight', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  const id = c.req.param('id');
+  const { is_spotlight } = await c.req.json();
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    await c.env.DEEPLEARN_DB.prepare(
+      'UPDATE content_posts SET is_spotlight = ?, updated_at_ms = ? WHERE id = ?'
+    ).bind(is_spotlight ? 1 : 0, Date.now(), id).run();
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
   }
 });
 
@@ -4698,6 +4804,91 @@ app.get('/api/funnel/cohorts', async (c) => {
   }
 });
 
+app.post('/api/enroll', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const userId = actor.userId;
+
+    const payload = await c.req.json().catch(() => ({}));
+    const courseId = clean(payload?.course_id, 64);
+    let cohortId = clean(payload?.cohort_id, 64);
+
+    if (!courseId) {
+      return c.json({ error: 'course_id is required.' }, 400);
+    }
+
+    // Resolve cohort if not provided (pick latest open/active)
+    if (!cohortId) {
+      const bestCohort = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT id FROM cohorts 
+         WHERE course_id = ? AND status IN ('active', 'open')
+         ORDER BY start_date ASC LIMIT 1`
+      )
+        .bind(courseId)
+        .first();
+      
+      if (bestCohort) {
+        cohortId = bestCohort.id;
+      }
+    }
+
+    const nowMs = Date.now();
+
+    // Insert course enrollment
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_enrollments (
+         course_id, user_id, status, progress_pct, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, 'active', 0, ?, ?)
+       ON CONFLICT(course_id, user_id) DO NOTHING`
+    )
+      .bind(courseId, userId, nowMs, nowMs)
+      .run();
+
+    // Insert cohort enrollment (if cohort identified)
+    if (cohortId) {
+      await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO cohort_enrollments (
+           cohort_id, course_id, user_id, status, progress_pct, completion_state, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, 'enrolled', 0, 'in_progress', ?, ?)
+         ON CONFLICT(cohort_id, user_id) DO NOTHING`
+      )
+        .bind(cohortId, courseId, userId, nowMs, nowMs)
+        .run();
+    }
+
+    // Log event
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO learning_events (
+         org_id, course_id, cohort_id, user_id, event_name, event_value, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, cohortId || '', userId, 'course_enrolled', 1, nowMs)
+      .run();
+
+    return c.json({ 
+      ok: true, 
+      message: 'Enrolled successfully.', 
+      courseId, 
+      cohortId,
+      workspaceUrl: '/learn'
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to enroll in course.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/learn/access', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4797,6 +4988,7 @@ app.get('/api/learn/access', async (c) => {
           progress_score: Number.isFinite(Number(module.progress_score)) ? Number(module.progress_score) : null,
           progress_notes: clean(module.progress_notes || '', 2000),
           is_published: Number(module.is_published || 0) === 1,
+          is_spotlight: Number(module.is_spotlight || 0) === 1,
           is_unlocked: Number(module.is_unlocked || 0) === 1
         }))
       });
@@ -5550,7 +5742,7 @@ app.get('/api/content/posts', async (c) => {
          id, slug, title, summary, path, content_type, tags_json, source_urls_json, canonical_url,
          community_likes, prompt_text, prompt_output_preview, prompt_keyword, suggested_models_json,
          hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
-         published_at_ms, created_at_ms
+         is_spotlight, published_at_ms, created_at_ms
        FROM content_posts
        ${whereClause}
        ORDER BY COALESCE(published_at_ms, created_at_ms) DESC
@@ -5589,7 +5781,8 @@ app.get('/api/content/posts', async (c) => {
         hf_model_author: row.hf_model_author || '',
         hf_model_pipeline: row.hf_model_pipeline || '',
         hf_model_downloads: Number(row.hf_model_downloads || 0),
-        hf_model_likes: Number(row.hf_model_likes || 0)
+        hf_model_likes: Number(row.hf_model_likes || 0),
+        is_spotlight: Boolean(row.is_spotlight)
       };
     });
 
@@ -5770,7 +5963,7 @@ app.get('/api/admin/content/posts', async (c) => {
     const whereClause = requestedStatus && requestedStatus !== 'all' ? 'WHERE status = ?' : '';
     const query = `SELECT
       id, slug, title, summary, content_markdown, status, path, content_type, tags_json, source_urls_json, canonical_url,
-        model_name, prompt_version, generated_at_ms, approved_at_ms, published_at_ms, updated_at_ms
+        model_name, prompt_version, generated_at_ms, approved_at_ms, published_at_ms, updated_at_ms, is_spotlight
       FROM content_posts
       ${whereClause}
       ORDER BY updated_at_ms DESC
@@ -5802,7 +5995,8 @@ app.get('/api/admin/content/posts', async (c) => {
         Number(row.generated_at_ms || 0) + reviewWindowMs <= nowMs,
       approved_at_ms: row.approved_at_ms,
       published_at_ms: row.published_at_ms,
-      updated_at_ms: row.updated_at_ms
+      updated_at_ms: row.updated_at_ms,
+      is_spotlight: Boolean(row.is_spotlight)
     }));
 
     return c.json({
@@ -6131,11 +6325,13 @@ app.post('/api/admin/content/posts', async (c) => {
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const payload = await c.req.json();
-    const title = clean(payload?.title ?? '', 200);
-    const summary = clean(payload?.summary ?? '', 240);
-    const path = clean(payload?.path ?? '', 40).toLowerCase();
+    const title = clean(payload?.title ?? '', 200) || 'Untitled Draft';
+    const summary = clean(payload?.summary ?? '', 240) || 'No summary provided.';
+    const path = clean(payload?.path ?? '', 40).toLowerCase() || 'productivity';
     const contentType = clean(payload?.content_type ?? '', 40).toLowerCase() || 'daily_brief';
-    const contentMarkdown = typeof payload?.content_markdown === 'string' ? payload.content_markdown.slice(0, 48000).trim() : '';
+    const contentMarkdown = typeof payload?.content_markdown === 'string' && payload.content_markdown.trim() !== '' 
+      ? payload.content_markdown.slice(0, 48000).trim() 
+      : '# New Draft\n\nWrite your content here.';
     const tags = Array.isArray(payload?.tags)
       ? payload.tags.map((tag) => clean(String(tag), 32).toLowerCase()).filter(Boolean).slice(0, 12)
       : [];
@@ -6144,9 +6340,6 @@ app.post('/api/admin/content/posts', async (c) => {
       : [];
     const canonicalUrlInput = clean(payload?.canonical_url ?? '', 400);
 
-    if (!title || !summary || !contentMarkdown) {
-      return c.json({ error: 'title, summary, and content_markdown are required.' }, 400);
-    }
     if (!['productivity', 'research', 'entrepreneurship'].includes(path)) {
       return c.json({ error: 'Invalid content path.' }, 400);
     }
@@ -7180,9 +7373,8 @@ function parseCsvSet(value) {
 }
 
 function resolveContentReviewWindowMs(env) {
-  const rawMinutes = Number(clean(env.CONTENT_REVIEW_WINDOW_MINUTES || '', 12) || 180);
-  const safeMinutes = Number.isFinite(rawMinutes) ? Math.min(7 * 24 * 60, Math.max(5, Math.round(rawMinutes))) : 180;
-  return safeMinutes * 60 * 1000;
+  const mins = Number(env.CONTENT_REVIEW_WINDOW_MINUTES || 180);
+  return mins * 60 * 1000;
 }
 
 function isContentAutoPublishEnabled(env) {
@@ -7741,6 +7933,11 @@ async function ensureOpsSchema(db) {
     `CREATE INDEX IF NOT EXISTS idx_counselor_knowledge_course
       ON counselor_knowledge_items(course_id, kind, is_active, sort_order)`
     ,
+    `CREATE TABLE IF NOT EXISTS homepage_config (
+      id TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      updated_at_ms INTEGER NOT NULL
+    )`,
     `CREATE TABLE IF NOT EXISTS crm_action_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       lead_id TEXT NOT NULL DEFAULT '',
@@ -7764,6 +7961,23 @@ async function ensureOpsSchema(db) {
   await db.prepare(`ALTER TABLE lead_events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`).run().catch(() => {});
   await db.prepare(`ALTER TABLE content_posts ADD COLUMN canonical_url TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
   await db.prepare(`ALTER TABLE content_posts ADD COLUMN content_type TEXT NOT NULL DEFAULT 'daily_brief'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN is_spotlight INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_id TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_author TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_pipeline TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_downloads INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_text TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_output_preview TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_keyword TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN suggested_models_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN community_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_id TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_author TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_sdk TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_domain TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN social_media_markdown TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
   await db.prepare(`ALTER TABLE course_modules ADD COLUMN lesson_objectives_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
   await db.prepare(`ALTER TABLE course_modules ADD COLUMN expected_artifact TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
   await db.prepare(`ALTER TABLE course_modules ADD COLUMN assignment_prompt TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
@@ -7794,7 +8008,7 @@ async function recordCrmAudit(db, entry = {}) {
 
 function defaultContentCanonicalUrl(slug) {
   const cleanSlug = slugify(clean(slug || '', 180));
-  return cleanSlug ? `https://edu.greybrain.ai/briefs/${cleanSlug}` : 'https://edu.greybrain.ai/briefs';
+  return cleanSlug ? `https://med.greybrain.ai/briefs/${cleanSlug}` : 'https://med.greybrain.ai/briefs';
 }
 
 function buildEvergreenSeedEntries() {
@@ -8786,7 +9000,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-path2-overview',
       question: 'What does Path 2 (AI Research Accelerator) cover?',
-      answer: `Path 2 (${clean(path2.title || 'AI Research Accelerator', 220)}) teaches hypothesis-to-conclusion research workflows with AI support for literature synthesis, study design, evidence mapping, manuscript structuring, and reviewer-response readiness. Delivery is cohort-based with mentor review and AI tutor support between sessions. Fee: ${feeText}. Next cohort: ${clean(path2.next_cohort_start || 'TBD', 24)}.`
+      answer: `Path 2 (${clean(path2.title || 'AI Research Accelerator', 220)}) teaches hypothesis-to-conclusion research workflows with AI support for literature synthesis, study design, evidence mapping, manuscript structuring, and reviewer-response readiness. Delivery is cohort-based with mentor review and AI tutor support between sessions. Status: Rolling Admissions.`
     });
   }
 
@@ -8795,7 +9009,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-path3-overview',
       question: 'What does Path 3 (Doctor AI Entrepreneurship) cover?',
-      answer: `Path 3 (${clean(path3.title || 'Doctor AI Entrepreneurship', 220)}) focuses on venture execution: problem validation, no-code MVP build, pilot metrics, compliance packaging, and capstone investment-readiness. Delivery includes cohort sprints, AI tutor support, and mentor feedback on capstone artifacts. Fee: ${feeText}. Next cohort: ${clean(path3.next_cohort_start || 'TBD', 24)}.`
+      answer: `Path 3 (${clean(path3.title || 'Doctor AI Entrepreneurship', 220)}) focuses on venture execution: problem validation, no-code MVP build, pilot metrics, compliance packaging, and capstone investment-readiness. Delivery includes cohort sprints, AI tutor support, and mentor feedback on capstone artifacts. Status: Enrollment Open.`
     });
   }
 
@@ -8805,7 +9019,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-path1-overview',
       question: 'What does Path 1 (Clinical Productivity) cover?',
-      answer: `Path 1 (${clean(path1.title || 'Clinical AI Practitioner', 220)}) is designed for doctors who want immediate AI leverage in day-to-day clinical work. It covers prompting, notes, summaries, patient communication, workflow implementation, and safe adoption habits. Delivery is cohort-based with AI tutor support and mentor review. Fee: ${feeText}. Next cohort: ${clean(path1.next_cohort_start || 'TBD', 24)}.`
+      answer: `Path 1 (${clean(path1.title || 'Clinical AI Practitioner', 220)}) is designed for doctors who want immediate AI leverage in day-to-day clinical work. It covers prompting, notes, summaries, patient communication, workflow implementation, and safe adoption habits. Delivery is cohort-based with AI tutor support and mentor review. Status: Applications Active.`
     });
   }
 
@@ -9272,7 +9486,7 @@ async function sendAlertEmailNotification(env, alertPayload) {
     .filter((entry) => isValidEmail(entry));
   if (recipients.length === 0) return;
 
-  const fromEmail = clean(env.ALERT_EMAIL_FROM || 'alerts@edu.greybrain.ai', 220).toLowerCase();
+  const fromEmail = clean(env.ALERT_EMAIL_FROM || 'alerts@med.greybrain.ai', 220).toLowerCase();
   if (!isValidEmail(fromEmail)) return;
   const fromName = clean(env.ALERT_EMAIL_FROM_NAME || 'DeepLearn Ops Alerts', 120) || 'DeepLearn Ops Alerts';
   const subjectPrefix = clean(env.ALERT_EMAIL_SUBJECT_PREFIX || '[DeepLearn Alert]', 80) || '[DeepLearn Alert]';
@@ -10110,13 +10324,14 @@ Return strict JSON only (no markdown) with keys:
   "title": string,              // e.g. "Model Spotlight: Gemma 2 27B — Reasoning at the Bedside"
   "summary": string,            // Under 220 chars
   "content_markdown": string,   // The 160-200 word AI revolution paragraph
+  "social_media_markdown": string, // A crisp, hook-heavy social media post (300-400 chars, bullet points, emoji-friendly)
   "tags": string[]              // 3-5 lowercase tags
-}`;
+} `;
 
   let result;
   try {
     const resolved = resolveContentGenerationProvider(provider);
-    result = await callContentModelForDailyContent({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
   } catch (e) {
     throw new Error(`Model Spotlight AI call failed: ${e.message}`);
   }
@@ -10133,26 +10348,133 @@ Return strict JSON only (no markdown) with keys:
 
   await db.prepare(
     `INSERT INTO content_posts (
-      id, slug, title, summary, content_markdown, path, content_type, tags_json, status,
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json, status,
       hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
       model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, ?, ?, 'productivity', 'model_spotlight', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ms-v1', ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'productivity', 'news', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ms-v2', ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       slug=excluded.slug, title=excluded.title, summary=excluded.summary, content_markdown=excluded.content_markdown,
-      hf_model_id=excluded.hf_model_id, hf_model_author=excluded.hf_model_author,
+      social_media_markdown=excluded.social_media_markdown, hf_model_id=excluded.hf_model_id, hf_model_author=excluded.hf_model_author,
       hf_model_pipeline=excluded.hf_model_pipeline, hf_model_downloads=excluded.hf_model_downloads,
       hf_model_likes=excluded.hf_model_likes, status='draft', updated_at_ms=excluded.updated_at_ms`
   ).bind(
-    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000),
+    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000), clean(p.social_media_markdown || '', 2000),
     JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
     clean(p.hf_model_id, 160), clean(hfResolvedAuthor, 80),
     clean(p.hf_model_pipeline || topModels[0]?.pipeline || 'general', 80),
     hfModelDownloads, hfModelLikes,
     result.model || 'unknown', nowMs, nowMs, nowMs
   ).run();
-
   await recordContentRun(db, { runType: 'model_spotlight', status: 'success', message: `Model spotlight for ${publishDate}`, postId });
   return { skipped: false, post_id: postId, slug, title: p.title, hf_model_id: p.hf_model_id };
+}
+
+// =============================================================================
+// generateSpacesSpotlightDraft — Trending HF Spaces for Healthcare
+// =============================================================================
+async function generateSpacesSpotlightDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `space-spotlight-${dateSlug}`;
+
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Spaces spotlight already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Fetch trending spaces with "medical" or "healthcare" from HF
+  const hfUrl = 'https://huggingface.co/api/spaces?search=medical%20healthcare&sort=trendingScore&direction=-1&limit=10';
+  let topSpaces = [];
+  try {
+    const resp = await fetch(hfUrl);
+    if (resp.ok) {
+      const data = await resp.json();
+      topSpaces = data.map(s => ({
+        id: s.id,
+        author: s.author,
+        sdk: s.sdk,
+        likes: s.likes,
+        subdomain: s.subdomain
+      })).filter(s => s.id);
+    }
+  } catch (e) {}
+
+  if (topSpaces.length === 0) {
+    // Try a broader search if medical is empty
+    const altUrl = 'https://huggingface.co/api/spaces?sort=trendingScore&direction=-1&limit=5';
+    try {
+      const resp = await fetch(altUrl);
+      if (resp.ok) {
+        const data = await resp.json();
+        topSpaces = data.map(s => ({ id: s.id, author: s.author, sdk: s.sdk, likes: s.likes, subdomain: s.subdomain }));
+      }
+    } catch (e) {}
+  }
+
+  if (topSpaces.length === 0) throw new Error('No valid HuggingFace spaces found.');
+
+  const spacesList = topSpaces.map((s, i) => `${i + 1}. ${s.id} (sdk: ${s.sdk}, likes: ${s.likes})`).join('\n');
+
+  const prompt = `You are the Lab Director at GreyBrain Academy, curating interactive AI tools (Spaces) for doctors.
+Today's date: ${publishDate}
+
+Here are today's trending interactive apps (Spaces) on HuggingFace:
+${spacesList}
+
+Choose the SINGLE most interactive or useful space for a doctor to play with.
+Write a 160–200 word paragraph in "AI Revolution" style — explain how this specific interactive tool helps a doctor understand AI capabilities.
+Tone: Curious, technical, encouraging. No emojis. Doctor-to-doctor.
+
+Return strict JSON only (no markdown):
+{
+  "hf_space_id": string,         // e.g. "HuggingFaceH4/zephyr-chat"
+  "hf_space_author": string,
+  "hf_space_sdk": string,
+  "title": string,               // e.g. "Spaces Spotlight: Interactive Radiology Assistant"
+  "summary": string,             // Hook sentence
+  "content_markdown": string,    // The 160-200 word paragraph
+  "social_media_markdown": string, // A crisp social media post with a link to the space (300-400 chars)
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`Spaces Spotlight AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown || !p.hf_space_id) throw new Error('Spaces Spotlight AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  const spaceInfo = topSpaces.find(s => s.id === p.hf_space_id) || {};
+
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json, status,
+      hf_space_id, hf_space_author, hf_space_sdk, hf_space_likes, hf_space_domain,
+      model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, 'productivity', 'news', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ss-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary, content_markdown=excluded.content_markdown,
+      social_media_markdown=excluded.social_media_markdown, hf_space_id=excluded.hf_space_id,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000), clean(p.social_media_markdown || '', 2000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.hf_space_id, 160), clean(p.hf_space_author || spaceInfo.author || '', 80),
+    clean(p.hf_space_sdk || spaceInfo.sdk || '', 80), spaceInfo.likes || 0, clean(spaceInfo.subdomain || '', 160),
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'space_spotlight', status: 'success', message: `Spaces spotlight for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, hf_space_id: p.hf_space_id };
 }
 
 // =============================================================================
@@ -10205,7 +10527,7 @@ Return strict JSON only (no markdown):
   let result;
   try {
     const resolved = resolveContentGenerationProvider(provider);
-    result = await callContentModelForDailyContent({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
   } catch (e) {
     throw new Error(`DAIY AI call failed: ${e.message}`);
   }
@@ -10271,6 +10593,7 @@ Return strict JSON only (no markdown):
   "title": string,             // e.g. "AI Health Intelligence — March 10"
   "summary": string,           // Under 220 chars
   "content_markdown": string,  // Markdown with 3 news items, each with ## headline, summary, Source: X
+  "social_media_markdown": string, // A crisp, hook-heavy social media summary of these 3 stories (300-400 chars, bullet points, emoji-friendly)
   "tags": string[]
 }`;
 
@@ -10279,11 +10602,11 @@ Return strict JSON only (no markdown):
     // Always use Gemini for health news (Google Search grounding)
     result = await callGeminiForDailyContentWithSearch({ apiKey, model: 'gemini-2.0-flash', prompt });
   } catch (e) {
-    // Fallback to standard Gemini without search if grounding fails
+    // Fallback to standard Chain (Groq/WorkerAI) if search fails
     try {
-      result = await callGeminiForDailyContent({ apiKey, model: 'gemini-2.0-flash', prompt });
+      result = await callContentModelWithFallback({ env, provider: 'groq', apiKey, modelOverride: '', prompt });
     } catch (e2) {
-      throw new Error(`Health News AI call failed: ${e2.message}`);
+      throw new Error(`Health News AI fallback chain failed: ${e2.message}`);
     }
   }
 
@@ -10293,14 +10616,15 @@ Return strict JSON only (no markdown):
   const postId = existing?.id || crypto.randomUUID();
   await db.prepare(
     `INSERT INTO content_posts (
-      id, slug, title, summary, content_markdown, path, content_type, tags_json,
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json,
       status, model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, ?, ?, 'entrepreneurship', 'health_news', ?, 'draft', ?, 'hn-v1', ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'entrepreneurship', 'health_news', ?, 'draft', ?, 'hn-v2', ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       slug=excluded.slug, title=excluded.title, summary=excluded.summary,
-      content_markdown=excluded.content_markdown, status='draft', updated_at_ms=excluded.updated_at_ms`
+      content_markdown=excluded.content_markdown, social_media_markdown=excluded.social_media_markdown,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
   ).bind(
-    postId, slug, clean(p.title, 200), clean(p.summary || '', 240), clean(p.content_markdown, 16000),
+    postId, slug, clean(p.title, 200), clean(p.summary || '', 240), clean(p.content_markdown, 16000), clean(p.social_media_markdown || '', 2000),
     JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : ['ai-health', 'entrepreneurship']),
     result.model || 'gemini-2.0-flash', nowMs, nowMs, nowMs
   ).run();
@@ -10382,9 +10706,19 @@ async function runScheduledContentGeneration(env, cron) {
       await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: scheduledApiKey, insights });
     }
 
-    // NEW: Model Spotlight (uses Groq or Gemini)
+    // NEW: Model Spotlight
     if (scheduledApiKey) {
       await generateModelSpotlightDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Spaces Spotlight
+    if (scheduledApiKey) {
+      await generateSpacesSpotlightDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Health News (Uses Search Grounding)
+    if (geminiKey) {
+      await generateHealthNewsDraft(env, { apiKey: geminiKey, force: false });
     }
 
     // NEW: DAIY prompt (uses Groq or Gemini)
@@ -10493,7 +10827,20 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
     };
   }
 
-  const sourceSnapshot = await fetchClinicalFeedSnapshot();
+  // Fetch internal news posts instead of calling Medium API
+  const sourceRows = await db.prepare(
+    `SELECT slug, title, published_at_ms 
+     FROM content_posts 
+     WHERE type IN ('news', 'blog') AND status = 'published' 
+     ORDER BY published_at_ms DESC 
+     LIMIT 8`
+  ).all();
+  
+  const sourceSnapshot = (sourceRows.results || []).map(r => ({
+    title: r.title,
+    url: `https://med.greybrain.ai/briefs/${r.slug}`,
+    date: r.published_at_ms > 0 ? new Date(r.published_at_ms).toISOString().slice(0, 10) : ''
+  }));
   const apiKey = (apiKeyOverride || '').trim();
   if (!apiKey) {
     throw new Error('Missing BYOK API key. Provide api_key for Gemini, Claude, or Grok generation.');
@@ -10519,7 +10866,7 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, pro
     }
   }
 
-  const generationResult = await callContentModelForDailyContent({
+  const generationResult = await callContentModelWithFallback({
     env,
     provider: resolveContentGenerationProvider(providerOverride || 'groq'),
     apiKey,
@@ -10670,6 +11017,47 @@ ${sourceSnapshot.map((item, idx) => `${idx + 1}. ${item.title} | ${item.url} | $
 `;
 }
 
+async function callContentModelWithFallback({ env, provider, apiKey, modelOverride, prompt, context = '' }) {
+  const chain = [];
+  
+  // 1. First attempt with requested provider
+  chain.push({ provider, apiKey, model: modelOverride });
+
+  // 2. Fallback to Gemini if not already tried
+  if (provider !== 'gemini' && apiKey) {
+    chain.push({ provider: 'gemini', apiKey, model: 'gemini-2.0-flash' });
+  }
+
+  // 3. Fallback to Groq if not already tried
+  if (provider !== 'groq' && (apiKey || env.GROQ_API_KEY)) {
+    chain.push({ provider: 'groq', apiKey: apiKey || env.GROQ_API_KEY, model: '' });
+  }
+
+  // 4. Final Fallback to Workers AI (No Key Required)
+  if (env.AI) {
+    chain.push({ provider: 'workers-ai', apiKey: '', model: '@cf/meta/llama-3.1-8b-instruct' });
+  }
+
+  let lastError = null;
+  for (const step of chain) {
+    try {
+      return await callContentModelForDailyContent({
+        env,
+        provider: step.provider,
+        apiKey: step.apiKey,
+        modelOverride: step.model,
+        prompt,
+        context
+      });
+    } catch (e) {
+      lastError = e;
+      console.error(`Provider ${step.provider} failed, trying next... Error: ${e.message}`);
+    }
+  }
+
+  throw new Error(`All providers in fallback chain failed. Last error: ${lastError?.message}`);
+}
+
 async function callContentModelForDailyContent({ env, provider, apiKey, modelOverride, prompt, context = '' }) {
   if (provider === 'gemini') {
     return await callGeminiForDailyContent({
@@ -10690,6 +11078,10 @@ async function callContentModelForDailyContent({ env, provider, apiKey, modelOve
     });
   }
 
+  if (provider === 'workers-ai') {
+    return await callWorkersAiForDailyContent({ env, model: modelOverride, prompt, context });
+  }
+
   const baseUrl =
     provider === 'xai'
       ? 'https://api.x.ai/v1'
@@ -10707,6 +11099,30 @@ async function callContentModelForDailyContent({ env, provider, apiKey, modelOve
     providerLabel: provider === 'xai' ? 'xAI' : 'Groq',
     context
   });
+}
+
+async function callWorkersAiForDailyContent({ env, model, prompt, context = '' }) {
+  const activeModel = model || '@cf/meta/llama-3.1-8b-instruct';
+  const systemPrompt = context 
+    ? `You are a clinically cautious editorial assistant. Return valid JSON only. Use context:\n\n${context}`
+    : 'You are a clinically cautious editorial assistant. Return valid JSON only.';
+
+  const result = await env.AI.run(activeModel, {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 2800
+  });
+
+  const text = (result?.response || result?.result?.response || result?.text || '').trim();
+  if (!text) throw new Error('Workers AI returned empty response.');
+
+  return {
+    payload: parseJsonObject(text),
+    model: activeModel
+  };
 }
 
 async function callOpenAiCompatForDailyContent({ env, apiKey, baseUrl, model, prompt, providerLabel }) {
@@ -10984,82 +11400,9 @@ function validateGeneratedContent(payload, sourceSnapshot) {
     video_script: videoScript,
     seo_metadata: seoMetadata,
     tags,
+    tags,
     sources
   };
-}
-
-async function fetchClinicalFeedSnapshot() {
-  const sourceCandidates = [
-    { title: 'Greybrain Clinical AI Feed', url: 'https://medium.com/feed/@ClinicalAI' },
-    { title: 'Greybrain Clinical AI', url: 'https://greybrain.ai/clinical-ai' }
-  ];
-
-  const snapshots = [];
-
-  for (const source of sourceCandidates) {
-    try {
-      const response = await fetch(source.url, {
-        headers: {
-          'user-agent': 'Mozilla/5.0 (compatible; DeepLearnContentBot/1.0)'
-        }
-      });
-      if (!response.ok) continue;
-      const text = await response.text();
-      const items = source.url.includes('/feed/')
-        ? parseRssItems(text)
-        : [{ title: source.title, url: source.url, date: isoDateInTimezone(Date.now(), 'UTC') }];
-      snapshots.push(...items);
-    } catch {
-      // Ignore source fetch failures and continue.
-    }
-  }
-
-  const deduped = [];
-  const seen = new Set();
-
-  for (const item of snapshots) {
-    if (!item.url || seen.has(item.url)) continue;
-    seen.add(item.url);
-    deduped.push(item);
-  }
-
-  if (deduped.length === 0) {
-    throw new Error('Unable to load source feed for daily content generation.');
-  }
-
-  return deduped.slice(0, 8);
-}
-
-function parseRssItems(xml) {
-  const matches = [...String(xml || '').matchAll(/<item>([\s\S]*?)<\/item>/g)];
-  return matches
-    .map((match) => {
-      const item = match[1] || '';
-      const title = decodeXml((item.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '');
-      const url = decodeXml((item.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '');
-      const pubDateRaw = decodeXml((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || [])[1] || '');
-      const parsedDate = new Date(pubDateRaw);
-      const date = Number.isNaN(parsedDate.getTime()) ? '' : parsedDate.toISOString().slice(0, 10);
-      return {
-        title: clean(title, 200),
-        url: clean(url, 400),
-        date
-      };
-    })
-    .filter((item) => item.title && item.url);
-}
-
-function decodeXml(value) {
-  return String(value || '')
-    .replace(/<!\[CDATA\[|\]\]>/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function normalizeCrmStage(value) {
@@ -11277,7 +11620,7 @@ async function handleOnboardingQueue(batch, env) {
           'Authorization': `Bearer ${resendKey}`
         },
         body: JSON.stringify({
-          from: 'GreyBrain Academy <academy@edu.greybrain.ai>',
+          from: 'GreyBrain Academy <academy@med.greybrain.ai>',
           to: [email],
           subject: `Welcome to ${courseTitle}`,
           html: `
@@ -11286,7 +11629,7 @@ async function handleOnboardingQueue(batch, env) {
               <p>Your enrollment in <b>${courseTitle}</b> (${cohortName}) is confirmed.</p>
               <p>You can now access the learner workspace to start your journey.</p>
               <div style="margin: 32px 0;">
-                <a href="https://edu.greybrain.ai/learn" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">Open Learner Workspace</a>
+                <a href="https://med.greybrain.ai/learn" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">Open Learner Workspace</a>
               </div>
               <hr style="border: 0; border-top: 1px solid #eee; margin: 32px 0;" />
               <p style="font-size: 12px; color: #64748b;">GreyBrain Academy & Operational Incubator</p>

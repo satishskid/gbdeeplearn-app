@@ -34,7 +34,7 @@
 - Keep this out of homepage; only in authenticated learner experience.
 
 ## SEO Direction
-- Canonical uses `https://edu.greybrain.ai`.
+- Canonical uses `https://med.greybrain.ai`.
 - Keep high-intent phrases in headings and metadata:
   - AI courses for doctors,
   - healthcare AI training,

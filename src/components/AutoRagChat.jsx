@@ -56,8 +56,11 @@ const AutoRagChat = () => {
             <div className="flex items-center gap-2">
               <span className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-sm font-bold border border-slate-700">GB</span>
               <div>
-                <h3 className="text-sm font-bold leading-tight">GreyBrain AI</h3>
-                <p className="text-[10px] text-slate-400">Ask about our content</p>
+                <h3 className="text-sm font-bold leading-tight flex items-center gap-1.5">
+                  GreyBrain AI
+                  <span className="text-[9px] bg-teal-500/20 text-teal-400 px-1.5 py-0.5 rounded-full border border-teal-500/30 font-medium">RAG-Verified</span>
+                </h3>
+                <p className="text-[10px] text-slate-400">Clinical Knowledge Retrieval Active</p>
               </div>
             </div>
             <button onClick={() => setIsOpen(false)} className="text-slate-400 hover:text-white transition-colors">

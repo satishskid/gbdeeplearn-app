@@ -18,7 +18,7 @@ if (!post) {
   return Astro.redirect('/briefs');
 }
 
-const canonicalUrl = post.canonical_url || `https://edu.greybrain.ai/briefs/${post.slug}`;
+const canonicalUrl = post.canonical_url || `https://med.greybrain.ai/briefs/${post.slug}`;
 const publishedLabel = formatBriefDate(post.published_at_ms || post.updated_at_ms || post.created_at_ms);
 const articleJsonLd = {
   '@context': 'https://schema.org',
@@ -32,7 +32,7 @@ const articleJsonLd = {
   publisher: {
     '@type': 'Organization',
     name: 'GreyBrain Academy',
-    url: 'https://edu.greybrain.ai'
+    url: 'https://med.greybrain.ai'
   },
   keywords: Array.isArray(post.tags) ? post.tags.join(', ') : ''
 };

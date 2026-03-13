@@ -1,7 +1,7 @@
 # GreyBrain Public Site V2 System Spec
 
 ## Objective
-Redesign `edu.greybrain.ai` so it no longer feels like a content page assembled from cards. The public site should feel like a premium academy product for doctors entering the AI era.
+Redesign `med.greybrain.ai` so it no longer feels like a content page assembled from cards. The public site should feel like a premium academy product for doctors entering the AI era.
 
 This is not a “homepage refresh.” It is a system redesign for the public-facing experience.
 

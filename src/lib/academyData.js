@@ -1,6 +1,6 @@
 const ACADEMY_ORIGIN = 'https://learn.greybrain.ai';
-const CLINICAL_FEED_URL = 'https://medium.com/feed/@ClinicalAI';
 const HUGGINGFACE_TRENDING_URL = 'https://huggingface.co/api/models?sort=trendingScore&direction=-1&limit=24&full=true';
+const HUGGINGFACE_SPACES_URL = 'https://huggingface.co/api/spaces?search=medical%20healthcare&sort=trendingScore&direction=-1&limit=24&full=true';
 
 const FALLBACK_COURSES = [
   {
@@ -43,29 +43,38 @@ const FALLBACK_COURSES = [
 
 const FALLBACK_BLOGS = [
   {
+    title: '3D Multimodal Intelligence: The March 2026 Frontier',
+    link: 'https://medium.com/@ClinicalAI/march-2026-frontier',
+    date: '2026-03-12',
+    summary: 'From Merlin in Nature to autonomous synthesis—how 3D volumetric reasoning is redefining the specialist role.',
+    categories: ['intelligence', '3d-vision']
+  },
+  {
+    title: 'Merreddie & Qure.ai: Agentic Triage Hits Scalability',
+    link: 'https://medium.com/@ClinicalAI/agentic-triage',
+    date: '2026-03-04',
+    summary: 'New regulatory milestones for autonomous chest X-ray screening and AI procurement agents.',
+    categories: ['regulation', 'triage']
+  },
+  {
     title: 'Gemma 3 and the Rise of Surgical Agents',
     link: 'https://medium.com/@ClinicalAI',
     date: '2026-02-25',
     summary: 'Clinical multimodal reasoning and edge-ready surgical agent workflows for healthcare teams.',
     categories: ['ai', 'healthcare']
-  },
-  {
-    title: 'From Long-Horizon Planning to Predictive Triaging',
-    link: 'https://medium.com/@ClinicalAI',
-    date: '2026-02-24',
-    summary: 'Agentic systems and predictive triage frameworks reshaping applied medicine.',
-    categories: ['ai', 'clinical-ai']
-  },
-  {
-    title: 'When Vision Models Meet Clinical Trials',
-    link: 'https://medium.com/@ClinicalAI',
-    date: '2026-02-23',
-    summary: 'How multimodal reasoning and trial intelligence are converging in clinical practice.',
-    categories: ['research', 'healthcare']
   }
 ];
 
 const FALLBACK_HF_MODELS = [
+  {
+    id: 'stanford/merlin-3d-vlm',
+    pipeline_tag: 'image-to-text',
+    likes: 1240,
+    downloads: 45000,
+    createdAt: '2026-03-04T00:00:00.000Z',
+    cardData: { license: 'non-commercial' },
+    isSpotlight: true
+  },
   {
     id: 'google/gemma-3-27b-it',
     pipeline_tag: 'text-generation',
@@ -105,6 +114,34 @@ const FALLBACK_HF_MODELS = [
     downloads: 0,
     createdAt: '2025-11-10T00:00:00.000Z',
     cardData: { license: 'mit' }
+  }
+];
+
+const FALLBACK_HF_SPACES = [
+  {
+    id: 'open-medical-llm/leaderboard',
+    likes: 0,
+    sdk: 'streamlit',
+    createdAt: '2026-03-01T00:00:00.000Z',
+    isSpotlight: true
+  },
+  {
+    id: 'google/rad_explain',
+    likes: 0,
+    sdk: 'gradio',
+    createdAt: '2025-11-15T00:00:00.000Z'
+  },
+  {
+    id: 'google/ehr-navigator-agent-with-medgemma',
+    likes: 0,
+    sdk: 'gradio',
+    createdAt: '2025-12-10T00:00:00.000Z'
+  },
+  {
+    id: 'gnumanth/MedGemma-Symptoms',
+    likes: 0,
+    sdk: 'gradio',
+    createdAt: '2026-01-20T00:00:00.000Z'
   }
 ];
 
@@ -516,7 +553,49 @@ function normalizeModelSpotlight(model, index = 0) {
     source: 'huggingface',
     sourceLabel: 'Hugging Face',
     pathHint,
-    sortScore: likes + downloads + (1000 - index)
+    sortScore: likes + downloads + (1000 - index) + (model.isSpotlight ? 1000000 : 0),
+    isSpotlight: Boolean(model.isSpotlight)
+  };
+}
+
+function explainSpaceTaskForClinicians(sdk) {
+  const norm = String(sdk || '').toLowerCase();
+  if (norm === 'streamlit') return 'Data-intensive clinical dashboards and leaderboards.';
+  if (norm === 'gradio') return 'Interactive model demos for clinical Q&A and imaging.';
+  if (norm === 'docker') return 'Full-stack medical applications and specialized API labs.';
+  return 'Interactive sandbox for clinician-led AI experimentation.';
+}
+
+function normalizeSpaceSpotlight(space, index = 0) {
+  const spaceId = cleanText(space?.id || '').slice(0, 160);
+  if (!spaceId) return null;
+  const sdk = cleanText(space?.sdk || 'interactive');
+  const likes = Number(space?.likes || 0);
+  const createdAt = parseIsoDate(space?.createdAt || space?.lastModified || '');
+  const authorPart = spaceId.includes('/') ? spaceId.split('/')[0] : '';
+  const shortName = spaceId.includes('/') ? spaceId.split('/').pop() : spaceId;
+  
+  const text = spaceId.toLowerCase();
+  const domain = /(radiology|image|xray|scan)/.test(text)
+    ? 'Radiology'
+    : /(ehr|record|clinical|note)/.test(text)
+      ? 'Clinical Ops'
+      : /(research|paper|bio|lab)/.test(text)
+        ? 'Research'
+        : 'Medical AI';
+
+  return {
+    name: shortName,
+    author: authorPart,
+    hfUrl: `https://huggingface.co/spaces/${spaceId}`,
+    sdk,
+    domain,
+    clinicalBlurb: explainSpaceTaskForClinicians(sdk),
+    likesFormatted: toK(likes),
+    likes,
+    date: createdAt || '',
+    categories: ['space-spotlight', 'hugging-face', sdk].filter(Boolean),
+    sortScore: likes + (1000 - index)
   };
 }
 
@@ -799,28 +878,18 @@ export async function getCourseCatalog() {
 
 export async function getClinicalFeedPosts(limit = 6) {
   try {
-    const xml = await fetchText(CLINICAL_FEED_URL);
-    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((match) => match[1]);
-    const posts = items.map((item) => {
-      const title = cleanText((item.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || '');
-      const link = cleanText((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '');
-      const pubDateRaw = cleanText((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || '');
-      const content = (item.match(/<content:encoded>([\s\S]*?)<\/content:encoded>/) || [])[1] || '';
-      const categories = [...item.matchAll(/<category>([\s\S]*?)<\/category>/g)]
-        .map((entry) => cleanText(entry[1]))
-        .filter(Boolean);
+    let apiOrigin = 'https://med.greybrain.ai';
+    try {
+      if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.PUBLIC_DEEPLEARN_API_ORIGIN) {
+        apiOrigin = import.meta.env.PUBLIC_DEEPLEARN_API_ORIGIN;
+      }
+    } catch (e) {}
+    apiOrigin = apiOrigin.replace(/\/+$/, '');
 
-      return {
-        title: editorializeTitle(title),
-        link: link || 'https://greybrain.ai/clinical-ai',
-        date: parseIsoDate(pubDateRaw) || '',
-        summary: editorializeSummary(firstParagraph(content), 'Clinical AI update from GreyBrain.'),
-        categories
-      };
-    });
-
-    const filtered = posts.filter((post) => post.title && post.link);
-    return filtered.slice(0, Math.max(1, limit));
+    const response = await fetch(`${apiOrigin}/api/content/news?limit=${Math.max(1, limit)}`);
+    if (!response.ok) throw new Error('API failed');
+    const data = await response.json();
+    return Array.isArray(data.posts) && data.posts.length > 0 ? data.posts : FALLBACK_BLOGS.slice(0, Math.max(1, limit));
   } catch {
     return FALLBACK_BLOGS.slice(0, Math.max(1, limit));
   }
@@ -845,6 +914,27 @@ export async function getHuggingFaceModelSpotlights(limit = 6) {
     return fallback.slice(0, maxItems).map(({ sortScore, ...rest }) => rest);
   } catch {
     return fallback.slice(0, maxItems).map(({ sortScore, ...rest }) => rest);
+  }
+}
+
+export async function getHuggingFaceSpacesSpotlights(limit = 6) {
+  const maxItems = Math.max(1, Math.min(12, Number(limit || 6)));
+  const fallback = FALLBACK_HF_SPACES.map((item, index) => normalizeSpaceSpotlight(item, index)).filter(Boolean);
+
+  try {
+    const raw = await fetchText(HUGGINGFACE_SPACES_URL, 12000);
+    const parsed = JSON.parse(raw);
+    const spaces = Array.isArray(parsed) ? parsed : [];
+    const normalized = spaces
+      .map((space, index) => normalizeSpaceSpotlight(space, index))
+      .filter(Boolean)
+      .sort((a, b) => Number(b.sortScore || 0) - Number(a.sortScore || 0))
+      .slice(0, maxItems);
+
+    if (normalized.length > 0) return normalized;
+    return fallback.slice(0, maxItems);
+  } catch {
+    return fallback.slice(0, maxItems);
   }
 }
 

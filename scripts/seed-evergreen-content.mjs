@@ -42,7 +42,7 @@ function buildSeedSql() {
   for (const entry of getEvergreenSeedEntries()) {
     const tagsJson = JSON.stringify(entry.tags || []);
     const sourceUrlsJson = JSON.stringify(entry.source_urls || []);
-    const canonicalUrl = `https://edu.greybrain.ai/briefs/${entry.slug}`;
+    const canonicalUrl = `https://med.greybrain.ai/briefs/${entry.slug}`;
     statements.push(`
 INSERT INTO content_posts (
   id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, canonical_url, model_name,

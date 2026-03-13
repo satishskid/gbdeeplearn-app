@@ -76,7 +76,7 @@ Run:
 ```bash
 ADMIN_API_TOKEN=... \
 DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
-DEEPLEARN_PAGES_BASE_URL=https://edu.greybrain.ai \
+DEEPLEARN_PAGES_BASE_URL=https://med.greybrain.ai \
 npm run release:orchestrate
 ```
 

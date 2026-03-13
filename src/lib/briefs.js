@@ -1,4 +1,4 @@
-const DEFAULT_CONTENT_API_ORIGIN = 'https://deeplearn-worker.satish-9f4.workers.dev';
+const DEFAULT_CONTENT_API_ORIGIN = 'https://med-greybrain-worker.satish-9f4.workers.dev';
 export const BRIEF_PATH_META = {
   productivity: {
     label: 'Practice',
@@ -83,6 +83,32 @@ export async function fetchPublishedBriefBySlug(slug) {
     throw new Error(payload?.error || 'Failed to load published brief.');
   }
   return payload?.post || null;
+}
+
+/**
+ * Fetches the global homepage configuration from the worker.
+ * Returns the parsed config object (e.g., { ticker_text: '...', ... }) or {} on failure.
+ * NOTE: This is a PUBLIC read – no auth required at the worker level for this endpoint variant.
+ */
+export async function fetchHomepageConfig() {
+  try {
+    const response = await fetch(`${getContentApiOrigin()}/api/homepage/config`);
+    if (!response.ok) return {};
+    const payload = await response.json();
+    if (!payload?.config_json) return {};
+    return JSON.parse(payload.config_json);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Returns posts that have been promoted to spotlight status (is_spotlight = 1).
+ * Filters from already-fetched posts array if provided, otherwise fetches fresh.
+ */
+export async function fetchSpotlightedPosts(posts) {
+  const source = posts ?? (await fetchPublishedBriefs(200).catch(() => []));
+  return source.filter((p) => p.is_spotlight);
 }
 
 export function formatBriefDate(value) {

@@ -1,4 +1,4 @@
-import AuthRoleGate from './AuthRoleGate';
+import AuthRoleGate from '../shared/AuthRoleGate';
 import PlatformConsole from './PlatformConsole';
 
 export default function PlatformWorkspace() {

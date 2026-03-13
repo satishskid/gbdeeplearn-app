@@ -2,7 +2,7 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import { fetchPublishedBriefs, formatBriefDate, getBriefPathMeta, getContentTypeMeta } from '../../lib/briefs.js';
 
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 const posts = await fetchPublishedBriefs(120).catch(() => []);
 const sortedPosts = [...posts].sort((a, b) => Number(new Date(b.date || 0)) - Number(new Date(a.date || 0)));
 const leadPost = sortedPosts[0] || null;

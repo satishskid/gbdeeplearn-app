@@ -3,7 +3,7 @@ import { fetchPublishedBriefs } from '../lib/briefs.js';
 import { TRACKS } from '../lib/tracks';
 
 export async function GET() {
-  const siteOrigin = 'https://edu.greybrain.ai';
+  const siteOrigin = 'https://med.greybrain.ai';
   const now = new Date().toISOString();
 
   const staticPaths = [

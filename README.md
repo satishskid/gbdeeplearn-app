@@ -8,7 +8,7 @@ Core direction:
 - **The AI Academy for Doctors Who Want to Practice, Publish, and Build**
 
 Current platform state:
-1. Public academy at `edu.greybrain.ai` is redesigned and operational with a path-led homepage, briefs, courses, enrollment, and counselor flow.
+1. Public academy at `med.greybrain.ai` is redesigned and operational with a path-led homepage, briefs, courses, enrollment, and counselor flow.
 2. Internal ops stack is live for content editing, CRM, cohorts, analytics, and learner operations.
 3. Learning model is live as `starter refresher -> path recommendation -> deeper cohort`.
 
@@ -185,7 +185,7 @@ Single command to enforce end-to-end production gates:
 ```bash
 ADMIN_API_TOKEN=... \
 DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
-DEEPLEARN_PAGES_BASE_URL=https://edu.greybrain.ai \
+DEEPLEARN_PAGES_BASE_URL=https://med.greybrain.ai \
 npm run release:orchestrate
 ```
 
@@ -208,7 +208,9 @@ Required GitHub secret:
 
 Recommended GitHub repository variables:
 - `DEEPLEARN_API_BASE_URL` (default in script: `https://deeplearn-worker.satish-9f4.workers.dev`)
-- `DEEPLEARN_PAGES_BASE_URL` (default in script: `https://edu.greybrain.ai`)
+### Production Credentials
+- **Frontend URL**: `https://med.greybrain.ai`
+- **API URL**: `https://gb-baas.codex.workers.dev` (Internal)
 - `EXPECTED_COORDINATOR_EMAILS` (default: `satish@skids.health,drpratichi@skids.health`)
 - `DISALLOWED_EMAIL_MARKERS` (default: `qa.coordinator.`)
 - `PUBLIC_DEEPLEARN_API_ORIGIN` (recommended: `https://deeplearn-worker.satish-9f4.workers.dev`)

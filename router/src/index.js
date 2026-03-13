@@ -17,7 +17,7 @@ app.use('/app*', async (c) => {
 // Proxy all other traffic to the original Marketing Pages Project
 app.use('*', async (c) => {
   const url = new URL(c.req.url);
-  const targetUrl = `https://gbdeelearn.pages.dev${url.pathname}${url.search}`;
+  const targetUrl = `https://gbdeeplearn.pages.dev${url.pathname}${url.search}`;
   
   const proxyReq = new Request(targetUrl, c.req.raw);
   proxyReq.headers.delete('host');

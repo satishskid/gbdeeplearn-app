@@ -110,7 +110,7 @@ export default function BriefArticlePage() {
     document.title = `${post.title} | GreyBrain Academy`;
 
     const description = post.summary || 'GreyBrain Academy brief for doctors who want to practice, publish, and build.';
-    const canonicalUrl = post.canonical_url || `https://edu.greybrain.ai/briefs/${post.slug}`;
+    const canonicalUrl = post.canonical_url || `https://med.greybrain.ai/briefs/${post.slug}`;
 
     const ensureTag = (selector, create) => {
       let node = document.head.querySelector(selector);

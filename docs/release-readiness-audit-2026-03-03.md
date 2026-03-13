@@ -30,7 +30,7 @@ Scope: SEO -> lead capture -> conversion -> course delivery (Path 1/2/3) -> comp
 | Completion -> Certificate | Completion updates + cert generation + verification | `POST /api/learn/modules/:moduleId/progress`, `POST /api/admin/courses/:courseId/enroll/:userId/complete`, `GET /api/certificates/verify` in `src/worker.js` | Live smoke for fresh user: verify returned `valid:true` with signed certificate | Ready |
 | Content Automation | Daily content generation + draft review window + auto-publish | `/api/admin/content/generate-daily`, `/api/admin/content/posts`, `/api/admin/content/auto-publish-expired`; auto-publish logic in `src/worker.js`; envs in `wrangler.toml` | Live admin content API returns published draft(s); readiness includes `admin_content_runs` pass | Ready |
 | Monitoring | Ops alerts and failure capture in-app | `recordOpsAlert()` + `/api/admin/alerts` in `src/worker.js`; alert panel in `PlatformConsole.jsx` | Live `/api/admin/alerts` returns open alerts (including webhook signature alerts) | Partial |
-| Deployment | Public site on `edu.greybrain.ai` + worker live | `wrangler.toml`, pages + worker scripts in `package.json` | Live `curl -I https://edu.greybrain.ai` => 200; worker root responds with endpoint manifest | Ready |
+| Deployment | Public site on `med.greybrain.ai` + worker live | `wrangler.toml`, pages + worker scripts in `package.json` | Live `curl -I https://med.greybrain.ai` => 200; worker root responds with endpoint manifest | Ready |
 
 ## Explicit gaps to close before "100%" claim
 1. Path 1 tutor knowledge base is not fully ingested yet.

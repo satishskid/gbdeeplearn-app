@@ -8,7 +8,7 @@ const now = new Date();
 const runId = now.toISOString().replace(/[:.]/g, '-');
 
 const apiBase = (process.env.DEEPLEARN_API_BASE_URL || 'https://deeplearn-worker.satish-9f4.workers.dev').replace(/\/+$/, '');
-const pagesBase = (process.env.DEEPLEARN_PAGES_BASE_URL || 'https://edu.greybrain.ai').replace(/\/+$/, '');
+const pagesBase = (process.env.DEEPLEARN_PAGES_BASE_URL || 'https://med.greybrain.ai').replace(/\/+$/, '');
 const expectedCoordinatorEmails = (process.env.EXPECTED_COORDINATOR_EMAILS || 'satish@skids.health,drpratichi@skids.health')
   .split(',')
   .map((email) => email.trim().toLowerCase())
